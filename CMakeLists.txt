@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 4.1)
-project(datapacks)
+project(RedScript)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 
-add_executable(datapacks main.cpp)
+add_executable(RedScript src/main.cpp
+        src/tokenization.h
+        src/parser.h
+        src/generation.h
+        src/arena.h)
