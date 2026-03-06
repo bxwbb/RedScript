@@ -219,6 +219,42 @@ public:
         std::visit(visitor, bin_expr->var);
     }
 
+    void gen_sin_expr(const NodeSinExpr *sin_expr, const std::optional<std::string> &conditions = {}) {
+        struct SinExprVisitor {
+            Generator &gen;
+            const std::optional<std::string> &conditions = {};
+
+            void operator()(const NodeSinExprNot *not_) const {
+                gen.gen_expr(not_->expr, conditions);
+                gen.pop("rax", conditions);
+                gen.output(
+                    "execute if score rax __" + gen.m_file_name + " matches 1 run scoreboard players set r __" + gen.
+                    m_file_name + " 0\n", conditions);
+                gen.output(
+                    "execute if score rax __" + gen.m_file_name + " matches 0 run scoreboard players set r __" + gen.
+                    m_file_name + " 1\n", conditions);
+                gen.score_move("r", "rax", conditions);
+                gen.to_nbt("rax", conditions);
+                gen.push("rax", conditions);
+            }
+
+            void operator()(const NodeSinExprNeg *not_) const {
+                gen.gen_expr(not_->expr, conditions);
+                gen.pop("rax", conditions);
+                gen.output("scoreboard players set r __" + gen.m_file_name + " 0\n", conditions);
+                gen.output(
+                    "scoreboard players operation r __" + gen.m_file_name + " -= rax __" + gen.m_file_name + "\n",
+                    conditions);
+                gen.score_move("r", "rax", conditions);
+                gen.to_nbt("rax", conditions);
+                gen.push("rax", conditions);
+            }
+        };
+
+        SinExprVisitor visitor{.gen = *this, .conditions = conditions};
+        std::visit(visitor, sin_expr->var);
+    }
+
     void gen_expr(const NodeExpr *expr, const std::optional<std::string> &conditions = {}) {
         struct ExprVisitor {
             Generator &gen;
@@ -231,6 +267,10 @@ public:
             void operator()(const NodeBinExpr *bin_expr) const {
                 gen.gen_bin_expr(bin_expr, conditions);
             }
+
+            void operator()(const NodeSinExpr *sin_expr) const {
+                gen.gen_sin_expr(sin_expr, conditions);
+            }
         };
 
         ExprVisitor visitor{.gen = *this, .conditions = conditions};
@@ -238,10 +278,27 @@ public:
     }
 
     void gen_scope(const NodeScope *scope, const std::optional<std::string> &conditions = {}) {
+        std::optional ff = create_new_function_file();
+        ff.value() << "";
+        ff.value().close();
+        std::stringstream function_file_name;
+        function_file_name << m_file_path << m_file_name << "_" << m_function_file_count << ".mcfunction";
+        std::fstream ffs(function_file_name.str(), std::ios::out | std::ios::app);
+        int lc = 0;
         begin_scope();
         for (const NodeStmt *stmt: scope->stmts) {
-            gen_stmt(stmt, conditions);
+            gen_stmt(stmt, std::move(ffs), lc, conditions);
         }
+        if (lc == 0) {
+            back_function_file();
+        } else {
+            output(
+                "function " + m_file_name + ":" + get_function_file_name() + " with storage minecraft:__" +
+                m_file_name + " r\n",
+                conditions);
+            for (int i = 0; i < lc; ++i) released_label();
+        }
+        ffs.close();
         end_scope();
     }
 
@@ -289,9 +346,13 @@ public:
         std::visit(visitor, pred->var);
     }
 
-    void gen_stmt(const NodeStmt *stmt, const std::optional<std::string> &conditions = {}) {
+    void gen_stmt(const NodeStmt *stmt, std::optional<std::fstream> ff = {},
+                  std::optional<int> lc = {},
+                  const std::optional<std::string> &conditions = {}) {
         struct StmtVisitor {
             Generator &gen;
+            std::optional<std::fstream> &ff;
+            std::optional<int> &lc;
             const std::optional<std::string> conditions;
 
             void operator()(const NodeStmtExit *stmt_exit) const {
@@ -358,10 +419,58 @@ public:
                 }
                 gen.released_label();
             }
+
+            void operator()(const NodeStmtMinecraftCommand *stmt_minecraft_command) const {
+                gen.output(stmt_minecraft_command->command.value.value() + "\n", conditions);
+            }
+
+            void operator()(const NodeStmtMacrosCommand *stmt_macros_command) const {
+                if (ff.has_value()) {
+                    gen.write_macros_function(ff.value(), lc.value(), stmt_macros_command, conditions);
+                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
+                    for (int i = 0; i < lc; ++i) {
+                        gen.output(
+                            "data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label() +
+                            " set from storage minecraft:__"
+                            + gen.m_file_name + " " + gen.get_label() + "\n", conditions);
+                    }
+                } else {
+                    std::fstream function_file = gen.create_new_function_file();
+                    int label_count = 0;
+                    gen.write_macros_function(function_file, label_count, stmt_macros_command, conditions);
+                    function_file.close();
+                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
+                    for (int i = 0; i < label_count; ++i) {
+                        gen.output(
+                            "data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label() +
+                            " set from storage minecraft:__"
+                            + gen.m_file_name + " " + gen.get_label() + "\n", conditions);
+                    }
+                    gen.output(
+                        "function " + gen.m_file_name + ":" + gen.get_function_file_name() +
+                        " with storage minecraft:__" +
+                        gen.m_file_name + " r\n",
+                        conditions);
+                    for (int i = 0; i < label_count; ++i) gen.released_label();
+                }
+            }
         };
 
-        StmtVisitor visitor{.gen = *this, .conditions = conditions};
+        StmtVisitor visitor{.gen = *this, .ff = ff, .lc = lc, .conditions = conditions};
         std::visit(visitor, stmt->var);
+    }
+
+    static std::string extract_x_from_dollar_format(const std::string &a) {
+        if (a.length() < 3) {
+            throw std::runtime_error("Input string is too short, expected format: $(x)");
+        }
+        if (const std::string prefix = "$("; a.substr(0, 2) != prefix) {
+            throw std::runtime_error("Input string does not start with '$(': " + a);
+        }
+        if (a.back() != ')') {
+            throw std::runtime_error("Input string does not end with ')': " + a);
+        }
+        return a.substr(2, a.length() - 3);
     }
 
     void gen_prog() {
@@ -393,12 +502,19 @@ private:
     }
 
     void pop(const std::string &reg, const std::optional<std::string> &conditions = {}) {
-        // output("execute store result storage minecraft:__" + m_file_name +
-        //        " " + reg + " int 1 run data get storage minecraft:__" + m_file_name + " __stack[-1]\n", conditions);
         output(
             "execute store result score " + reg + " __" + m_file_name + " run data get storage minecraft:__" +
             m_file_name +
             " __stack[-1] 1\n", conditions);
+        output("data remove storage minecraft:__" + m_file_name + " __stack[-1]\n", conditions);
+        m_stack_size--;
+    }
+
+    void pop_to_nbt(const std::string &reg, const std::optional<std::string> &conditions = {}) {
+        output(
+            "execute store result storage minecraft:__" + m_file_name + " " + reg +
+            " int 1 run data get storage minecraft:__" +
+            m_file_name + " __stack[-1] 1\n", conditions);
         output("data remove storage minecraft:__" + m_file_name + " __stack[-1]\n", conditions);
         m_stack_size--;
     }
@@ -440,24 +556,11 @@ private:
         m_output << "function test:__util/get_data with storage minecraft:__" << m_file_name << " r\n";
     }
 
-    // void to_score(const std::string &reg, const std::optional<std::string> &conditions = {}) {
-    //     output(
-    //         "execute store result score " + reg + " __" + m_file_name + " run data get storage minecraft:__" +
-    //         m_file_name + " " + reg + " 1\n", conditions);
-    // }
-
     void score_move(const std::string &reg, const std::string &label,
                     const std::optional<std::string> &conditions = {}) {
         output("scoreboard players operation " + label + " __" + m_file_name + " = " + reg + " __" + m_file_name + "\n",
                conditions);
     }
-
-    // void to_score_with_label(const std::string &reg, const std::string &label,
-    //                          const std::optional<std::string> &conditions = {}) {
-    //     output(
-    //         "execute store result score " + label + " __" + m_file_name + " run data get storage minecraft:__" +
-    //         m_file_name + " " + reg + " 1\n", conditions);
-    // }
 
     void to_nbt(const std::string &reg, const std::optional<std::string> &conditions = {}) {
         output("execute store result storage minecraft:__" + m_file_name +
@@ -469,6 +572,15 @@ private:
             m_output << "execute " << conditions.value() << "run " << comm;
         } else {
             m_output << comm;
+        }
+    }
+
+    static void output(std::fstream &stream, const std::string &comm,
+                       const std::optional<std::string> &conditions = {}) {
+        if (conditions.has_value()) {
+            stream << "execute " << conditions.value() << "run " << comm;
+        } else {
+            stream << comm;
         }
     }
 
@@ -485,27 +597,53 @@ private:
         m_scopes.pop_back();
     }
 
-    // std::string create_label(const std::stringstream &last_str) {
-    //     std::stringstream label_tag;
-    //     std::stringstream path;
-    //     label_tag << " " << m_file_name << ":" << "main_" << m_label_count << ".mcfunction\n";
-    //     label_tag << "return 0";
-    //     path << m_file_name << "/data/" << m_file_name << "/function/main_" << m_label_count << ".mcfunction";
-    //     std::fstream label_file(path.str(), std::ios::out);
-    //     label_file << "# Generated by RedScript " << VERSION << "\n";
-    //     label_file << "# Label to main file with label_" << m_label_count << "\n";
-    //     m_output << last_str.str();
-    //     m_output << "function " << label_tag.str();
-    //     m_output.close();
-    //     m_label_count++;
-    //     return label_tag.str();
-    // }
-
     std::string create_label() {
         std::stringstream label_tag;
         label_tag << "main_" << m_label_count;
         m_label_count++;
         return label_tag.str();
+    }
+
+    std::string get_label() const {
+        std::stringstream label_tag;
+        label_tag << "main_" << m_label_count - 1;
+        return label_tag.str();
+    }
+
+    std::fstream create_new_function_file() {
+        std::stringstream function_file_name;
+        function_file_name << m_file_path << m_file_name << "_" << m_function_file_count << ".mcfunction";
+        std::fstream function_file(function_file_name.str(), std::ios::out);
+        m_function_file_count++;
+        return function_file;
+    }
+
+    void back_function_file() {
+        m_function_file_count--;
+    }
+
+    std::string get_function_file_name() const {
+        std::stringstream function_file_name;
+        function_file_name << m_file_name << "_" << (m_function_file_count - 1);
+        return function_file_name.str();
+    }
+
+    void write_macros_function(std::fstream &function_file, int &label_count,
+                               const NodeStmtMacrosCommand *stmt_macros_command,
+                               const std::optional<std::string> &conditions = {}) {
+        output(function_file, "$", conditions);
+        for (const Token &command: stmt_macros_command->commands) {
+            if (command.type == TokenType::macros_var) {
+                gen_expr(stmt_macros_command->vars.at(label_count));
+                std::string label = create_label();
+                label_count++;
+                pop_to_nbt(label);
+                output(function_file, "$(" + label);
+            } else {
+                output(function_file, command.value.value());
+            }
+        }
+        output(function_file, "\n");
     }
 
     void released_label() {
@@ -525,4 +663,5 @@ private:
     std::vector<Var> m_vars{};
     std::vector<size_t> m_scopes{};
     int m_label_count = 0;
+    int m_function_file_count = 0;
 };

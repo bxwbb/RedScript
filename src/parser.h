@@ -79,14 +79,22 @@ struct NodeBinExprOr {
     NodeExpr *rhs;
 };
 
+struct NodeSinExprNot {
+    NodeExpr *expr;
+};
+
+struct NodeSinExprNeg {
+    NodeExpr *expr;
+};
+
+struct NodeSinExpr {
+    std::variant<NodeSinExprNot *, NodeSinExprNeg *> var;
+};
+
 struct NodeBinExpr {
     std::variant<NodeBinExprAdd *, NodeBinExprMulti *, NodeBinExprSub *, NodeBinExprDiv *, NodeBinExprEq *,
         NodeBinExprLet *, NodeBinExprBet *, NodeBinExprLetEq *, NodeBinExprBetEq *, NodeBinExprNoEq *, NodeBinExprAnd *,
         NodeBinExprOr *> var;
-};
-
-struct NodeSinExpr {
-
 };
 
 struct NodeTerm {
@@ -94,7 +102,7 @@ struct NodeTerm {
 };
 
 struct NodeExpr {
-    std::variant<NodeTerm *, NodeBinExpr *> var;
+    std::variant<NodeTerm *, NodeBinExpr *, NodeSinExpr *> var;
 };
 
 struct NodeStmtExit {
@@ -108,8 +116,11 @@ struct NodeStmtLet {
 
 struct NodeStmt;
 
+struct NodeStmtMacrosCommand;
+
 struct NodeScope {
     std::vector<NodeStmt *> stmts;
+    std::vector<NodeStmtMacrosCommand *> commands;
 };
 
 struct NodeIfPred;
@@ -139,8 +150,18 @@ struct NodeStmtAssign {
     NodeExpr *expr{};
 };
 
+struct NodeStmtMinecraftCommand {
+    Token command;
+};
+
+struct NodeStmtMacrosCommand {
+    std::vector<Token> commands;
+    std::vector<NodeExpr *> vars;
+};
+
 struct NodeStmt {
-    std::variant<NodeStmtExit *, NodeStmtLet *, NodeScope *, NodeStmtIf *, NodeStmtAssign *> var;
+    std::variant<NodeStmtExit *, NodeStmtLet *, NodeScope *, NodeStmtIf *, NodeStmtAssign *, NodeStmtMinecraftCommand *,
+        NodeStmtMacrosCommand *> var;
 };
 
 struct NodeProg {
@@ -156,9 +177,13 @@ public:
     }
 
     void error_expected(const std::string &msg) const {
-        std::cerr << "A parse Error : Expected " << msg << " on line " << (peek(-1).has_value()
-                                                                               ? peek(-1).value().line
-                                                                               : 1) << " in file " << m_file_path <<
+        error_msg("Expected " + msg);
+    }
+
+    void error_msg(const std::string &msg) const {
+        std::cerr << "A parse Error : " << msg << " on line " << (peek(-1).has_value()
+                                                                      ? peek(-1).value().line
+                                                                      : 1) << " in file " << m_file_path <<
                 std::endl;
         exit(EXIT_FAILURE);
     }
@@ -193,13 +218,50 @@ public:
         return {};
     }
 
-    std::optional<NodeExpr *> pares_expr(const int min_prec = 0) {
-        std::optional<NodeTerm *> term_lhs = parse_term();
-        if (!term_lhs.has_value()) {
+    std::optional<NodeExpr *> parse_sin_expr() {
+        std::optional<Token> curr_tok = peek();
+        std::optional<int> prec = curr_tok.has_value() ? sin_prec(curr_tok->type) : std::nullopt;
+
+        if (prec.has_value()) {
+            const auto [type, line, col, value] = consume();
+
+            auto inner_expr = parse_sin_expr();
+            if (!inner_expr.has_value()) {
+                error_expected("expression");
+            }
+
+            auto sin_node = m_allocator.alloc<NodeSinExpr>();
+
+            if (type == TokenType::minus) {
+                auto neg = m_allocator.alloc<NodeSinExprNeg>();
+                neg->expr = inner_expr.value();
+                sin_node->var = neg;
+            } else if (type == TokenType::not_) {
+                auto not_ = m_allocator.alloc<NodeSinExprNot>();
+                not_->expr = inner_expr.value();
+                sin_node->var = not_;
+            }
+
+            auto expr = m_allocator.alloc<NodeExpr>();
+            expr->var = sin_node;
+            return expr;
+        }
+
+        auto term = parse_term();
+        if (!term.has_value()) {
             return {};
         }
-        auto expr_lhs = m_allocator.alloc<NodeExpr>();
-        expr_lhs->var = term_lhs.value();
+
+        auto expr = m_allocator.alloc<NodeExpr>();
+        expr->var = term.value();
+        return expr;
+    }
+
+    std::optional<NodeExpr *> pares_expr(const int min_prec = 0) {
+        std::optional<NodeExpr *> expr_lhs = parse_sin_expr();
+        if (!expr_lhs.has_value()) {
+            return {};
+        }
 
         while (true) {
             std::optional<Token> curr_tok = peek();
@@ -222,80 +284,80 @@ public:
             const auto expr_lhs2 = m_allocator.alloc<NodeExpr>();
             if (type == TokenType::plus) {
                 auto add = m_allocator.alloc<NodeBinExprAdd>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 add->lhs = expr_lhs2;
                 add->rhs = expr_rhs.value();
                 expr->var = add;
             } else if (type == TokenType::star) {
                 auto multi = m_allocator.alloc<NodeBinExprMulti>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 multi->lhs = expr_lhs2;
                 multi->rhs = expr_rhs.value();
                 expr->var = multi;
             } else if (type == TokenType::minus) {
                 auto sub = m_allocator.alloc<NodeBinExprSub>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 sub->lhs = expr_lhs2;
                 sub->rhs = expr_rhs.value();
                 expr->var = sub;
             } else if (type == TokenType::fslash) {
                 auto div = m_allocator.alloc<NodeBinExprDiv>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 div->lhs = expr_lhs2;
                 div->rhs = expr_rhs.value();
                 expr->var = div;
             } else if (type == TokenType::test_eq) {
                 auto eq = m_allocator.alloc<NodeBinExprEq>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 eq->lhs = expr_lhs2;
                 eq->rhs = expr_rhs.value();
                 expr->var = eq;
             } else if (type == TokenType::letter) {
                 auto let = m_allocator.alloc<NodeBinExprLet>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 let->lhs = expr_lhs2;
                 let->rhs = expr_rhs.value();
                 expr->var = let;
             } else if (type == TokenType::better) {
                 auto bet = m_allocator.alloc<NodeBinExprBet>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 bet->lhs = expr_lhs2;
                 bet->rhs = expr_rhs.value();
                 expr->var = bet;
             } else if (type == TokenType::let_eq) {
                 auto let_eq = m_allocator.alloc<NodeBinExprLetEq>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 let_eq->lhs = expr_lhs2;
                 let_eq->rhs = expr_rhs.value();
                 expr->var = let_eq;
             } else if (type == TokenType::bet_eq) {
                 auto bet_eq = m_allocator.alloc<NodeBinExprBetEq>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 bet_eq->lhs = expr_lhs2;
                 bet_eq->rhs = expr_rhs.value();
                 expr->var = bet_eq;
             } else if (type == TokenType::no_eq) {
                 auto no_eq = m_allocator.alloc<NodeBinExprNoEq>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 no_eq->lhs = expr_lhs2;
                 no_eq->rhs = expr_rhs.value();
                 expr->var = no_eq;
             } else if (type == TokenType::and_) {
                 auto and_ = m_allocator.alloc<NodeBinExprAnd>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 and_->lhs = expr_lhs2;
                 and_->rhs = expr_rhs.value();
                 expr->var = and_;
             } else if (type == TokenType::or_) {
                 auto or_ = m_allocator.alloc<NodeBinExprOr>();
-                expr_lhs2->var = expr_lhs->var;
+                expr_lhs2->var = expr_lhs.value()->var;
                 or_->lhs = expr_lhs2;
                 or_->rhs = expr_rhs.value();
                 expr->var = or_;
             }
-            expr_lhs->var = expr;
+            expr_lhs.value()->var = expr;
         }
-        return expr_lhs;
+        return expr_lhs.value();
     }
 
     std::optional<NodeScope *> parse_scope() {
@@ -418,6 +480,34 @@ public:
             stmt->var = stmt_if;
             return stmt;
         }
+        if (const auto command = try_consume(TokenType::commands)) {
+            auto stmt_command = m_allocator.alloc<NodeStmtMinecraftCommand>();
+            stmt_command->command = command.value();
+            try_consume_err(TokenType::semi);
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_command;
+            return stmt;
+        }
+        if (const auto command = try_consume(TokenType::macros_start)) {
+            auto stmt_macros_commands = m_allocator.alloc<NodeStmtMacrosCommand>();
+            while (peek().has_value() && peek().value().type != TokenType::semi) {
+                if (peek().value().type == TokenType::macros_var) {
+                    stmt_macros_commands->commands.push_back(consume());
+                    if (const auto expr = pares_expr()) {
+                        stmt_macros_commands->vars.push_back(expr.value());
+                        try_consume(TokenType::close_paren);
+                    } else {
+                        print_error("Invalid expression");
+                    }
+                } else {
+                    stmt_macros_commands->commands.push_back(consume());
+                }
+            }
+            try_consume_err(TokenType::semi);
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_macros_commands;
+            return stmt;
+        }
         return {};
     }
 
@@ -427,7 +517,7 @@ public:
             if (const auto stmt = parse_stmt()) {
                 prog.stmts.push_back(stmt.value());
             } else {
-                print_error("Invalid statement");
+                error_msg("Invalid statement");
             }
         }
         return prog;
