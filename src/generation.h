@@ -42,6 +42,60 @@ public:
             void operator()(const NodeTermParen *term_paren) const {
                 gen.gen_expr(term_paren->expr, conditions);
             }
+
+            void operator()(const NodeTermPlusPlus *term_plus_plus) const {
+                const auto ident = term_plus_plus->ident;
+                const auto it = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == ident.value.value();
+                    });
+                if (it == gen.m_vars.cend()) {
+                    print_error("Undeclared identifier: " + ident.value.value());
+                }
+                std::stringstream offset;
+                offset << "__stack[-" << (gen.m_stack_size - it->stack_loc) << "]";
+                gen.output(
+                    "execute store result score pp __" + gen.m_file_name + " run data get storage minecraft:__" + gen.
+                    m_file_name + " " +
+                    offset.str() +
+                    "\n", conditions);
+                gen.output("scoreboard players add pp __" + gen.m_file_name + " 1\n", conditions);
+                gen.to_nbt("pp", conditions);
+                gen.output(
+                    "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
+                    " set from storage minecraft:__" + gen.m_file_name + " pp\n",
+                    conditions);
+                gen.push("pp");
+            }
+
+            void operator()(const NodeTermMinusMinus *term_minus_minus) const {
+                const auto ident = term_minus_minus->ident;
+                const auto it = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == ident.value.value();
+                    });
+                if (it == gen.m_vars.cend()) {
+                    print_error("Undeclared identifier: " + ident.value.value());
+                }
+                std::stringstream offset;
+                offset << "__stack[-" << (gen.m_stack_size - it->stack_loc) << "]";
+                gen.output(
+                    "execute store result score pp __" + gen.m_file_name + " run data get storage minecraft:__" + gen.
+                    m_file_name + " " +
+                    offset.str() +
+                    "\n", conditions);
+                gen.output("scoreboard players add pp __" + gen.m_file_name + " -1\n", conditions);
+                gen.to_nbt("pp", conditions);
+                gen.output(
+                    "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
+                    " set from storage minecraft:__" + gen.m_file_name + " pp\n",
+                    conditions);
+                gen.push("pp");
+            }
         };
         TermVisitor visitor({.gen = *this, .conditions = conditions});
         std::visit(visitor, term->var);
@@ -278,28 +332,48 @@ public:
     }
 
     void gen_scope(const NodeScope *scope, const std::optional<std::string> &conditions = {}) {
-        std::optional ff = create_new_function_file();
-        ff.value() << "";
-        ff.value().close();
-        std::stringstream function_file_name;
-        function_file_name << m_file_path << m_file_name << "_" << m_function_file_count << ".mcfunction";
-        std::fstream ffs(function_file_name.str(), std::ios::out | std::ios::app);
-        int lc = 0;
+        if (scope->is_outline) {
+            std::fstream old_fstream = std::move(m_output);
+            m_output = create_new_function_file();
+            std::string function_name = get_function_file_name();
+            begin_scope();
+            for (const NodeStmt *stmt: scope->stmts) {
+                gen_stmt(stmt, {}, {}, conditions);
+            }
+            end_scope();
+            m_output.close();
+            m_output = std::move(old_fstream);
+            output("function " + m_file_name + ":" + function_name + "\n", conditions);
+        } else {
+            begin_scope();
+            for (const NodeStmt *stmt: scope->stmts) {
+                gen_stmt(stmt, {}, {}, conditions);
+            }
+            end_scope();
+        }
+    }
+
+    void gen_while(const NodeExpr *expr, const NodeScope *scope, const std::optional<NodeExpr *> &expr_conditions = {}, const std::optional<std::string> &conditions = {}) {
+        std::fstream old_fstream = std::move(m_output);
+        m_output = create_new_function_file();
+        const std::string function_name = get_function_file_name();
+        gen_expr(expr, conditions);
+        pop("rax");
+        output(
+            "execute if score rax __" + m_file_name + " matches 0 run return 0\n", conditions);
         begin_scope();
         for (const NodeStmt *stmt: scope->stmts) {
-            gen_stmt(stmt, std::move(ffs), lc, conditions);
+            gen_stmt(stmt, {}, {}, conditions);
         }
-        if (lc == 0) {
-            back_function_file();
-        } else {
-            output(
-                "function " + m_file_name + ":" + get_function_file_name() + " with storage minecraft:__" +
-                m_file_name + " r\n",
-                conditions);
-            for (int i = 0; i < lc; ++i) released_label();
+        if (expr_conditions.has_value()) {
+            gen_expr(expr_conditions.value(), conditions);
+            only_pop(conditions);
         }
-        ffs.close();
         end_scope();
+        output("function " + m_file_name + ":" + function_name + "\n", conditions);
+        m_output.close();
+        m_output = std::move(old_fstream);
+        output("function " + m_file_name + ":" + function_name + "\n", conditions);
     }
 
     void gen_if_pred(const NodeIfPred *pred, const std::vector<std::string> &labels,
@@ -393,7 +467,7 @@ public:
                     "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
                     " set from storage minecraft:__"
                     + gen.m_file_name + " __stack[-1]\n", conditions);
-                gen.only_pop();
+                gen.only_pop(conditions);
             }
 
             void operator()(const NodeScope *scope) const {
@@ -430,9 +504,9 @@ public:
                     gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
                     for (int i = 0; i < lc; ++i) {
                         gen.output(
-                            "data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label() +
+                            "data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label(i) +
                             " set from storage minecraft:__"
-                            + gen.m_file_name + " " + gen.get_label() + "\n", conditions);
+                            + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
                     }
                 } else {
                     std::fstream function_file = gen.create_new_function_file();
@@ -442,9 +516,9 @@ public:
                     gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
                     for (int i = 0; i < label_count; ++i) {
                         gen.output(
-                            "data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label() +
+                            "data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label(i) +
                             " set from storage minecraft:__"
-                            + gen.m_file_name + " " + gen.get_label() + "\n", conditions);
+                            + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
                     }
                     gen.output(
                         "function " + gen.m_file_name + ":" + gen.get_function_file_name() +
@@ -453,6 +527,15 @@ public:
                         conditions);
                     for (int i = 0; i < label_count; ++i) gen.released_label();
                 }
+            }
+
+            void operator()(const NodeStmtWhile *stmt_while) const {
+                gen.gen_while(stmt_while->expr, stmt_while->scope, {}, conditions);
+            }
+
+            void operator()(const NodeStmtFor *stmt_for) const {
+                gen.gen_stmt(stmt_for->let, {}, {}, conditions);
+                gen.gen_while(stmt_for->expr, stmt_for->while_->scope, stmt_for->end, conditions);
             }
         };
 
@@ -519,8 +602,8 @@ private:
         m_stack_size--;
     }
 
-    void only_pop() {
-        m_output << "data remove storage minecraft:__" << m_file_name << " __stack[-1]\n";
+    void only_pop(const std::optional<std::string> &conditions = {}) {
+        output("data remove storage minecraft:__" + m_file_name + " __stack[-1]\n", conditions);
         m_stack_size--;
     }
 
@@ -604,9 +687,9 @@ private:
         return label_tag.str();
     }
 
-    std::string get_label() const {
+    std::string get_label(const int index = 0) const {
         std::stringstream label_tag;
-        label_tag << "main_" << m_label_count - 1;
+        label_tag << "main_" << m_label_count - 1 - index;
         return label_tag.str();
     }
 

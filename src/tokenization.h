@@ -34,6 +34,11 @@ enum class TokenType {
     macros_command,
     macros_var,
     macros_start,
+    outline,
+    while_,
+    plus_plus,
+    minus_minus,
+    for_,
 };
 
 inline std::string to_string(const TokenType type) {
@@ -93,9 +98,21 @@ inline std::string to_string(const TokenType type) {
         case TokenType::commands:
             return "commands";
         case TokenType::macros_command:
-            return "macros_command";
+            return "/macros_command";
         case TokenType::macros_var:
-            return "macros_var";
+            return "$(macros_var)";
+        case TokenType::macros_start:
+            return "$/";
+        case TokenType::outline:
+            return "outline";
+        case TokenType::while_:
+            return "while";
+        case TokenType::plus_plus:
+            return "++";
+        case TokenType::minus_minus:
+            return "--";
+        case TokenType::for_:
+            return "for";
         default:
             return "";
     }
@@ -166,9 +183,9 @@ public:
 
 private:
     void check(std::vector<Token> &tokens, std::string &buf, int &line_count) {
-        if (std::isalpha(peek().value())) {
+        if (std::isalpha(peek().value()) || peek().value() == '_') {
             buf.push_back(consume());
-            while (peek().has_value() && std::isalnum(peek().value())) {
+            while (peek().has_value() && std::isalnum(peek().value()) || peek().value() == '_') {
                 buf.push_back(consume());
             }
             if (buf == "exit") {
@@ -185,6 +202,15 @@ private:
                 buf.clear();
             } else if (buf == "else") {
                 tokens.push_back({.type = TokenType::else_, .line = line_count});
+                buf.clear();
+            } else if (buf == "outline") {
+                tokens.push_back({.type = TokenType::outline, .line = line_count});
+                buf.clear();
+            } else if (buf == "while") {
+                tokens.push_back({.type = TokenType::while_, .line = line_count});
+                buf.clear();
+            } else if (buf == "for") {
+                tokens.push_back({.type = TokenType::for_, .line = line_count});
                 buf.clear();
             } else {
                 tokens.push_back({.type = TokenType::ident, .line = line_count, .value = buf});
@@ -272,6 +298,14 @@ private:
                 }
             }
             if (!com.empty()) tokens.push_back({.type = TokenType::macros_command, .line = line_count, .value = com});
+        } else if (peek().value() == '+' && peek(1).has_value() && peek(1).value() == '+') {
+            consume();
+            consume();
+            tokens.push_back({.type = TokenType::plus_plus, .line = line_count});
+        } else if (peek().value() == '-' && peek(1).has_value() && peek(1).value() == '-') {
+            consume();
+            consume();
+            tokens.push_back({.type = TokenType::minus_minus, .line = line_count});
         } else if (peek().value() == '(') {
             consume();
             tokens.push_back({.type = TokenType::open_paren, .line = line_count});

@@ -97,8 +97,16 @@ struct NodeBinExpr {
         NodeBinExprOr *> var;
 };
 
+struct NodeTermPlusPlus {
+    Token ident{};
+};
+
+struct NodeTermMinusMinus {
+    Token ident{};
+};
+
 struct NodeTerm {
-    std::variant<NodeTermIntLit *, NodeTermIdent *, NodeTermParen *> var;
+    std::variant<NodeTermIntLit *, NodeTermIdent *, NodeTermParen *, NodeTermPlusPlus *, NodeTermMinusMinus *> var;
 };
 
 struct NodeExpr {
@@ -120,7 +128,7 @@ struct NodeStmtMacrosCommand;
 
 struct NodeScope {
     std::vector<NodeStmt *> stmts;
-    std::vector<NodeStmtMacrosCommand *> commands;
+    bool is_outline = false;
 };
 
 struct NodeIfPred;
@@ -159,9 +167,21 @@ struct NodeStmtMacrosCommand {
     std::vector<NodeExpr *> vars;
 };
 
+struct NodeStmtWhile {
+    NodeExpr *expr{};
+    NodeScope *scope{};
+};
+
+struct NodeStmtFor {
+    NodeStmt *let{};
+    NodeExpr *expr{};
+    NodeExpr *end{};
+    NodeStmtWhile *while_{};
+};
+
 struct NodeStmt {
     std::variant<NodeStmtExit *, NodeStmtLet *, NodeScope *, NodeStmtIf *, NodeStmtAssign *, NodeStmtMinecraftCommand *,
-        NodeStmtMacrosCommand *> var;
+        NodeStmtMacrosCommand *, NodeStmtWhile *, NodeStmtFor *> var;
 };
 
 struct NodeProg {
@@ -197,6 +217,22 @@ public:
             return term;
         }
         if (const auto ident = try_consume(TokenType::ident)) {
+            if (peek().has_value() && peek().value().type == TokenType::plus_plus) {
+                consume();
+                auto trem_plus_plus = m_allocator.alloc<NodeTermPlusPlus>();
+                trem_plus_plus->ident = ident.value();
+                auto term = m_allocator.alloc<NodeTerm>();
+                term->var = trem_plus_plus;
+                return term;
+            }
+            if (peek().has_value() && peek().value().type == TokenType::minus_minus) {
+                consume();
+                auto term_minus_minus = m_allocator.alloc<NodeTermMinusMinus>();
+                term_minus_minus->ident = ident.value();
+                auto term = m_allocator.alloc<NodeTerm>();
+                term->var = term_minus_minus;
+                return term;
+            }
             auto trem_ident = m_allocator.alloc<NodeTermIdent>();
             trem_ident->ident = ident.value();
             auto term = m_allocator.alloc<NodeTerm>();
@@ -219,13 +255,13 @@ public:
     }
 
     std::optional<NodeExpr *> parse_sin_expr() {
-        std::optional<Token> curr_tok = peek();
-        std::optional<int> prec = curr_tok.has_value() ? sin_prec(curr_tok->type) : std::nullopt;
+        const std::optional<Token> curr_tok = peek();
+        const std::optional<int> prec = curr_tok.has_value() ? sin_prec(curr_tok->type) : std::nullopt;
 
         if (prec.has_value()) {
             const auto [type, line, col, value] = consume();
 
-            auto inner_expr = parse_sin_expr();
+            const auto inner_expr = parse_sin_expr();
             if (!inner_expr.has_value()) {
                 error_expected("expression");
             }
@@ -361,10 +397,14 @@ public:
     }
 
     std::optional<NodeScope *> parse_scope() {
+        auto scope = m_allocator.alloc<NodeScope>();
+        if (try_consume(TokenType::outline).has_value()) {
+            scope->is_outline = true;
+        }
         if (!try_consume(TokenType::open_curly).has_value()) {
             return {};
         }
-        auto scope = m_allocator.alloc<NodeScope>();
+
         while (auto stmt = parse_stmt()) {
             scope->stmts.push_back(stmt.value());
         }
@@ -461,6 +501,14 @@ public:
             }
             print_error("Invalid scope");
         }
+        if (peek().has_value() && peek().value().type == TokenType::outline && peek_after(TokenType::open_curly)) {
+            if (auto scope = parse_scope()) {
+                auto stmt = m_allocator.alloc<NodeStmt>();
+                stmt->var = scope.value();
+                return stmt;
+            }
+            print_error("Invalid scope");
+        }
         if (auto if_ = try_consume(TokenType::if_)) {
             try_consume_err(TokenType::open_paren);
             auto stmt_if = m_allocator.alloc<NodeStmtIf>();
@@ -497,7 +545,7 @@ public:
                         stmt_macros_commands->vars.push_back(expr.value());
                         try_consume(TokenType::close_paren);
                     } else {
-                        print_error("Invalid expression");
+                        error_msg("Invalid expression");
                     }
                 } else {
                     stmt_macros_commands->commands.push_back(consume());
@@ -506,6 +554,57 @@ public:
             try_consume_err(TokenType::semi);
             auto stmt = m_allocator.alloc<NodeStmt>();
             stmt->var = stmt_macros_commands;
+            return stmt;
+        }
+        if (const auto while_ = try_consume(TokenType::while_)) {
+            try_consume_err(TokenType::open_paren);
+            auto stmt_while = m_allocator.alloc<NodeStmtWhile>();
+            if (const auto expr = pares_expr()) {
+                stmt_while->expr = expr.value();
+            } else {
+                error_msg("Invalid expression");
+            }
+            try_consume_err(TokenType::close_paren);
+            if (const auto scope = parse_scope()) {
+                scope.value()->is_outline = true;
+                stmt_while->scope = scope.value();
+            } else {
+                error_msg("Invalid scope");
+            }
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_while;
+            return stmt;
+        }
+        if (const auto for_ = try_consume(TokenType::for_)) {
+            try_consume_err(TokenType::open_paren);
+            auto stmt_for = m_allocator.alloc<NodeStmtFor>();
+            if (const auto stmt = parse_stmt()) {
+                 stmt_for->let = stmt.value();
+            } else {
+                error_expected("statement");
+            }
+            if (const auto expr = pares_expr()) {
+                stmt_for->expr = expr.value();
+            } else {
+                error_msg("Invalid expression");
+            }
+            try_consume_err(TokenType::semi);
+            if (const auto expr = pares_expr()) {
+                stmt_for->end = expr.value();
+            } else {
+                error_msg("Invalid expression");
+            }
+            try_consume_err(TokenType::close_paren);
+            auto stmt_while = m_allocator.alloc<NodeStmtWhile>();
+            if (const auto scope = parse_scope()) {
+                scope.value()->is_outline = true;
+                stmt_while->scope = scope.value();
+                stmt_for->while_ = stmt_while;
+            } else {
+                print_error("Invalid scope");
+            }
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_for;
             return stmt;
         }
         return {};
@@ -529,6 +628,14 @@ private:
             return {};
         }
         return m_tokens.at(m_index + offset);
+    }
+
+    [[nodiscard]] bool peek_after(const TokenType type) const {
+        int count = 1;
+        while (peek(count).has_value() && peek(count).value().type != type) {
+            count++;
+        }
+        return peek(count).has_value();
     }
 
     Token consume() {

@@ -1,16 +1,7 @@
-let x = 1 + 2 + 3 + 4;
--/say X的值逐渐递增十次: ;
-{
-    $/say       $(x)!!!!!!;
-    $/say       $(x + 1)!!!!!!;
-    $/say       $(x + 2)!!!!!!;
-    $/say       $(x + 3)!!!!!!;
-    $/say       $(x + 4)!!!!!!;
-    $/say       $(x + 5)!!!!!!;
-    $/say       $(x + 6)!!!!!!;
-    $/say       $(x + 7)!!!!!!;
-    $/say       $(x + 8)!!!!!!;
-    $/say       $(x + 9)!!!!!!;
-    $/say       $(x + 10)!!!!!!;
+let a = 0; let b = 1;
+for (let i = 0; i < 10; i++) {
+    $/tellraw @a "Fibonacci: $(a)";
+    let temp = a + b;
+    a = b;
+    b = temp;
 }
-exit(x);
