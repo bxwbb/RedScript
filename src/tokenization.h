@@ -39,6 +39,14 @@ enum class TokenType {
     plus_plus,
     minus_minus,
     for_,
+    ty_int,
+    wait,
+    mod,
+    struct_,
+    dot,
+    separation,
+    assert,
+    null,
 };
 
 inline std::string to_string(const TokenType type) {
@@ -113,6 +121,22 @@ inline std::string to_string(const TokenType type) {
             return "--";
         case TokenType::for_:
             return "for";
+        case TokenType::ty_int:
+            return "int";
+        case TokenType::wait:
+            return "wait";
+        case TokenType::mod:
+            return "%";
+        case TokenType::struct_:
+            return "struct";
+        case TokenType::dot:
+            return ".";
+        case TokenType::separation:
+            return ",";
+        case TokenType::assert:
+            return "assert";
+        case TokenType::null:
+            return "null";
         default:
             return "";
     }
@@ -133,6 +157,7 @@ inline std::optional<int> bin_prec(const TokenType type) {
             return 1;
         case TokenType::minus:
         case TokenType::plus:
+        case TokenType::mod:
             return 2;
         case TokenType::fslash:
         case TokenType::star:
@@ -211,6 +236,21 @@ private:
                 buf.clear();
             } else if (buf == "for") {
                 tokens.push_back({.type = TokenType::for_, .line = line_count});
+                buf.clear();
+            } else if (buf == "int") {
+                tokens.push_back({.type = TokenType::ty_int, .line = line_count});
+                buf.clear();
+            } else if (buf == "wait") {
+                tokens.push_back({.type = TokenType::wait, .line = line_count});
+                buf.clear();
+            } else if (buf == "struct") {
+                tokens.push_back({.type = TokenType::struct_, .line = line_count});
+                buf.clear();
+            } else if (buf == "assert") {
+                tokens.push_back({.type = TokenType::assert, .line = line_count});
+                buf.clear();
+            } else if (buf == "null") {
+                tokens.push_back({.type = TokenType::null, .line = line_count});
                 buf.clear();
             } else {
                 tokens.push_back({.type = TokenType::ident, .line = line_count, .value = buf});
@@ -347,13 +387,24 @@ private:
         } else if (peek().value() == '!') {
             consume();
             tokens.push_back({.type = TokenType::not_, .line = line_count});
+        } else if (peek().value() == '%') {
+            consume();
+            tokens.push_back({.type = TokenType::mod, .line = line_count});
+        } else if (peek().value() == '.') {
+            consume();
+            tokens.push_back({.type = TokenType::dot, .line = line_count});
+        } else if (peek().value() == ',') {
+            consume();
+            tokens.push_back({.type = TokenType::separation, .line = line_count});
         } else if (peek().value() == '\n') {
             consume();
             line_count++;
         } else if (std::isspace(peek().value())) {
             consume();
         } else {
-            print_error("Unknown keywords, variables, or expressions");
+            std::stringstream ss;
+            ss << "Unknown keywords, variables, or expressions '" << peek().value() << "' at line " << std::to_string(line_count);
+            print_error(ss.str());
         }
     }
 

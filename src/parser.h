@@ -5,6 +5,12 @@
 #include "./arena.h"
 #include "./tokenization.h"
 
+struct NodeExpr;
+struct NodeStmtStruct;
+struct NodeStmtCustomType;
+struct NodeStmtDeclarationVariable;
+struct NodeTerm;
+
 struct NodeTermIntLit {
     Token int_lit;
 };
@@ -13,10 +19,19 @@ struct NodeTermIdent {
     Token ident;
 };
 
-struct NodeExpr;
+struct NodeTermNull {
+};
+
+struct NodeTermTime {
+};
 
 struct NodeTermParen {
     NodeExpr *expr;
+};
+
+struct NodeTermAttribute {
+    Token ident;
+    NodeTerm *var;
 };
 
 struct NodeBinExprAdd {
@@ -35,6 +50,11 @@ struct NodeBinExprSub {
 };
 
 struct NodeBinExprDiv {
+    NodeExpr *lhs;
+    NodeExpr *rhs;
+};
+
+struct NodeBinExprMod {
     NodeExpr *lhs;
     NodeExpr *rhs;
 };
@@ -94,7 +114,7 @@ struct NodeSinExpr {
 struct NodeBinExpr {
     std::variant<NodeBinExprAdd *, NodeBinExprMulti *, NodeBinExprSub *, NodeBinExprDiv *, NodeBinExprEq *,
         NodeBinExprLet *, NodeBinExprBet *, NodeBinExprLetEq *, NodeBinExprBetEq *, NodeBinExprNoEq *, NodeBinExprAnd *,
-        NodeBinExprOr *> var;
+        NodeBinExprOr *, NodeBinExprMod *> var;
 };
 
 struct NodeTermPlusPlus {
@@ -106,7 +126,8 @@ struct NodeTermMinusMinus {
 };
 
 struct NodeTerm {
-    std::variant<NodeTermIntLit *, NodeTermIdent *, NodeTermParen *, NodeTermPlusPlus *, NodeTermMinusMinus *> var;
+    std::variant<NodeTermIntLit *, NodeTermIdent *, NodeTermParen *, NodeTermPlusPlus *, NodeTermMinusMinus *,
+        NodeTermTime *, NodeTermNull *, NodeTermAttribute *> var;
 };
 
 struct NodeExpr {
@@ -119,6 +140,7 @@ struct NodeStmtExit {
 
 struct NodeStmtLet {
     Token ident;
+    Token ident_type;
     NodeExpr *expr{};
 };
 
@@ -158,6 +180,11 @@ struct NodeStmtAssign {
     NodeExpr *expr{};
 };
 
+struct NodeStmtAssignAttribute {
+    NodeTerm *ident;
+    NodeExpr *expr{};
+};
+
 struct NodeStmtMinecraftCommand {
     Token command;
 };
@@ -175,13 +202,50 @@ struct NodeStmtWhile {
 struct NodeStmtFor {
     NodeStmt *let{};
     NodeExpr *expr{};
-    NodeExpr *end{};
+    NodeStmt *end{};
     NodeStmtWhile *while_{};
 };
 
+struct NodeStmtWait {
+    NodeExpr *expr{};
+    NodeScope *scope{};
+};
+
+struct NodeStmtDefinition {
+    std::variant<NodeStmtLet *, NodeStmtStruct *, NodeStmtCustomType *, NodeStmtDeclarationVariable *> var;
+};
+
+
+struct NodeStmtStruct {
+    Token ident;
+    std::vector<NodeStmtDefinition *> attributes;
+};
+
+struct NodeStmtCustomType {
+    Token ident_type;
+    Token ident_var;
+};
+
+struct NodeStmtDeclarationVariable {
+    Token ident_type;
+    Token ident;
+};
+
+struct NodeStmtAssert {
+    NodeExpr *expr;
+    int line = -1;
+    std::string file_name;
+};
+
+struct NodeStmtNullAssign {
+    NodeExpr *expr{};
+};
+
 struct NodeStmt {
-    std::variant<NodeStmtExit *, NodeStmtLet *, NodeScope *, NodeStmtIf *, NodeStmtAssign *, NodeStmtMinecraftCommand *,
-        NodeStmtMacrosCommand *, NodeStmtWhile *, NodeStmtFor *> var;
+    std::variant<NodeStmtExit *, NodeScope *, NodeStmtIf *, NodeStmtAssign *, NodeStmtMinecraftCommand *,
+        NodeStmtMacrosCommand *, NodeStmtWhile *, NodeStmtFor *, NodeStmtWait *, NodeStmtDefinition *, NodeStmtAssert *,
+        NodeStmtNullAssign *, NodeStmtAssignAttribute *>
+    var;
 };
 
 struct NodeProg {
@@ -193,7 +257,7 @@ public:
     explicit Parser(std::vector<Token> &tokens, const std::string &file_path)
         : m_tokens(std::move(tokens)),
           m_file_path(file_path),
-          m_allocator(1024 * 1024 * 4) {
+          m_allocator(1024 * 1024 * 8) {
     }
 
     void error_expected(const std::string &msg) const {
@@ -233,6 +297,17 @@ public:
                 term->var = term_minus_minus;
                 return term;
             }
+            if (peek().has_value() && peek().value().type == TokenType::dot) {
+                consume();
+                if (const auto right_term = parse_term()) {
+                    const auto term_attribute = m_allocator.alloc<NodeTermAttribute>();
+                    term_attribute->ident = ident.value();
+                    term_attribute->var = right_term.value();
+                    auto term = m_allocator.alloc<NodeTerm>();
+                    term->var = term_attribute;
+                    return term;
+                }
+            }
             auto trem_ident = m_allocator.alloc<NodeTermIdent>();
             trem_ident->ident = ident.value();
             auto term = m_allocator.alloc<NodeTerm>();
@@ -240,13 +315,19 @@ public:
             return term;
         }
         if (const auto open_paren = try_consume(TokenType::open_paren)) {
-            const auto expr = pares_expr();
+            const auto expr = parse_expr();
             if (!expr.has_value()) {
                 error_expected("expression");
             }
             try_consume_err(TokenType::close_paren);
             auto term_paren = m_allocator.alloc<NodeTermParen>();
             term_paren->expr = expr.value();
+            auto term = m_allocator.alloc<NodeTerm>();
+            term->var = term_paren;
+            return term;
+        }
+        if (try_consume(TokenType::null)) {
+            auto term_paren = m_allocator.alloc<NodeTermNull>();
             auto term = m_allocator.alloc<NodeTerm>();
             term->var = term_paren;
             return term;
@@ -293,7 +374,7 @@ public:
         return expr;
     }
 
-    std::optional<NodeExpr *> pares_expr(const int min_prec = 0) {
+    std::optional<NodeExpr *> parse_expr(const int min_prec = 0) {
         std::optional<NodeExpr *> expr_lhs = parse_sin_expr();
         if (!expr_lhs.has_value()) {
             return {};
@@ -312,7 +393,7 @@ public:
             }
             const auto [type, line, col, value] = consume();
             const int next_min_prec = prec.value() + 1;
-            auto expr_rhs = pares_expr(next_min_prec);
+            auto expr_rhs = parse_expr(next_min_prec);
             if (!expr_rhs.has_value()) {
                 error_expected("expression");
             }
@@ -390,6 +471,12 @@ public:
                 or_->lhs = expr_lhs2;
                 or_->rhs = expr_rhs.value();
                 expr->var = or_;
+            } else if (type == TokenType::mod) {
+                auto mod = m_allocator.alloc<NodeBinExprMod>();
+                expr_lhs2->var = expr_lhs.value()->var;
+                mod->lhs = expr_lhs2;
+                mod->rhs = expr_rhs.value();
+                expr->var = mod;
             }
             expr_lhs.value()->var = expr;
         }
@@ -416,7 +503,7 @@ public:
         if (try_consume(TokenType::elif).has_value()) {
             try_consume_err(TokenType::open_paren);
             const auto elif = m_allocator.alloc<NodeIfPredElif>();
-            if (const auto expr = pares_expr()) {
+            if (const auto expr = parse_expr()) {
                 elif->expr = expr.value();
             } else {
                 error_expected("expression");
@@ -444,39 +531,104 @@ public:
         return {};
     }
 
-    std::optional<NodeStmt *> parse_stmt() {
-        if (peek().has_value() && peek().value().type == TokenType::exit && peek(1).has_value() && peek(1).value().type
-            ==
-            TokenType::open_paren) {
-            consume();
-            consume();
-            auto stmt_exit = m_allocator.alloc<NodeStmtExit>();
-            if (const auto node_expr = pares_expr()) {
-                stmt_exit->expr = node_expr.value();
-            } else {
-                print_error("Invalid expression");
-            }
-            try_consume_err(TokenType::close_paren);
-            try_consume_err(TokenType::semi);
-            auto stmt = m_allocator.alloc<NodeStmt>();
-            stmt->var = stmt_exit;
-            return stmt;
-        }
+    std::optional<NodeStmtDefinition *> parse_stmt_var() {
         if (peek().has_value() && peek().value().type == TokenType::let &&
             peek(1).has_value() && peek(1).value().type == TokenType::ident &&
             peek(2).has_value() && peek(2).value().type == TokenType::eq) {
             consume();
             auto stmt_let = m_allocator.alloc<NodeStmtLet>();
             stmt_let->ident = consume();
+            stmt_let->ident_type = Token{
+                .type = TokenType::ident, .line = stmt_let->ident.line, .col = stmt_let->ident.col, .value = "int"
+            };
             consume();
-            if (const auto expr = pares_expr()) {
+            if (const auto expr = parse_expr()) {
                 stmt_let->expr = expr.value();
             } else {
                 print_error("Invalid expression");
             }
             try_consume_err(TokenType::semi);
-            auto stmt = m_allocator.alloc<NodeStmt>();
+            auto stmt = m_allocator.alloc<NodeStmtDefinition>();
             stmt->var = stmt_let;
+            return stmt;
+        }
+        if (peek().has_value() && peek().value().type == TokenType::ty_int &&
+            peek(1).has_value() && peek(1).value().type == TokenType::ident &&
+            peek(2).has_value() && peek(2).value().type == TokenType::eq) {
+            consume();
+            auto stmt_let = m_allocator.alloc<NodeStmtLet>();
+            stmt_let->ident = consume();
+            stmt_let->ident_type = Token{
+                .type = TokenType::ident, .line = stmt_let->ident.line, .col = stmt_let->ident.col, .value = "int"
+            };
+            consume();
+            if (const auto expr = parse_expr()) {
+                stmt_let->expr = expr.value();
+            } else {
+                print_error("Invalid expression");
+            }
+            try_consume_err(TokenType::semi);
+            auto stmt = m_allocator.alloc<NodeStmtDefinition>();
+            stmt->var = stmt_let;
+            return stmt;
+        }
+        if (peek().has_value() && peek().value().type == TokenType::ty_int &&
+            peek(1).has_value() && peek(1).value().type == TokenType::ident &&
+            peek(2).has_value() && peek(2).value().type == TokenType::semi) {
+            auto stmt_let = m_allocator.alloc<NodeStmtDeclarationVariable>();
+            stmt_let->ident_type = consume();
+            stmt_let->ident = consume();
+            consume();
+            auto stmt = m_allocator.alloc<NodeStmtDefinition>();
+            stmt->var = stmt_let;
+            return stmt;
+        }
+        if (peek().has_value() && peek().value().type == TokenType::ident &&
+            peek(1).has_value() && peek(1).value().type == TokenType::ident &&
+            peek(2).has_value() && peek(2).value().type == TokenType::semi) {
+            auto stmt_let = m_allocator.alloc<NodeStmtDeclarationVariable>();
+            stmt_let->ident_type = consume();
+            stmt_let->ident = consume();
+            consume();
+            auto stmt = m_allocator.alloc<NodeStmtDefinition>();
+            stmt->var = stmt_let;
+            return stmt;
+        }
+        return {};
+    }
+
+    std::optional<NodeStmtDefinition *> parse_struct_attribute() {
+        if (const auto stmt_let = parse_stmt_var()) {
+            return stmt_let;
+        }
+        return {};
+    }
+
+    std::optional<NodeStmt *> parse_stmt(bool has_smit = true) {
+        if (peek().has_value() && peek().value().type == TokenType::exit && peek(1).has_value() && peek(1).value().type
+            ==
+            TokenType::open_paren) {
+            consume();
+            consume();
+            auto stmt_exit = m_allocator.alloc<NodeStmtExit>();
+            if (const auto node_expr = parse_expr()) {
+                stmt_exit->expr = node_expr.value();
+            } else {
+                print_error("Invalid expression");
+            }
+            try_consume_err(TokenType::close_paren);
+            if (has_smit) {
+                try_consume_err(TokenType::semi);
+            } else {
+                try_consume(TokenType::semi);
+            }
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_exit;
+            return stmt;
+        }
+        if (const auto stmt_var = parse_stmt_var()) {
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_var.value();
             return stmt;
         }
         if (peek().has_value() && peek().value().type == TokenType::ident && peek(1).has_value() && peek(1).value().type
@@ -484,12 +636,16 @@ public:
             const auto assign = m_allocator.alloc<NodeStmtAssign>();
             assign->ident = consume();
             consume();
-            if (const auto expr = pares_expr()) {
+            if (const auto expr = parse_expr()) {
                 assign->expr = expr.value();
             } else {
                 error_expected("expression");
             }
-            try_consume_err(TokenType::semi);
+            if (has_smit) {
+                try_consume_err(TokenType::semi);
+            } else {
+                try_consume(TokenType::semi);
+            }
             auto stmt = m_allocator.emplace<NodeStmt>(assign);
             return stmt;
         }
@@ -512,7 +668,7 @@ public:
         if (auto if_ = try_consume(TokenType::if_)) {
             try_consume_err(TokenType::open_paren);
             auto stmt_if = m_allocator.alloc<NodeStmtIf>();
-            if (const auto expr = pares_expr()) {
+            if (const auto expr = parse_expr()) {
                 stmt_if->expr = expr.value();
             } else {
                 print_error("Invalid expression");
@@ -531,7 +687,11 @@ public:
         if (const auto command = try_consume(TokenType::commands)) {
             auto stmt_command = m_allocator.alloc<NodeStmtMinecraftCommand>();
             stmt_command->command = command.value();
-            try_consume_err(TokenType::semi);
+            if (has_smit) {
+                try_consume_err(TokenType::semi);
+            } else {
+                try_consume(TokenType::semi);
+            }
             auto stmt = m_allocator.alloc<NodeStmt>();
             stmt->var = stmt_command;
             return stmt;
@@ -541,7 +701,7 @@ public:
             while (peek().has_value() && peek().value().type != TokenType::semi) {
                 if (peek().value().type == TokenType::macros_var) {
                     stmt_macros_commands->commands.push_back(consume());
-                    if (const auto expr = pares_expr()) {
+                    if (const auto expr = parse_expr()) {
                         stmt_macros_commands->vars.push_back(expr.value());
                         try_consume(TokenType::close_paren);
                     } else {
@@ -551,7 +711,11 @@ public:
                     stmt_macros_commands->commands.push_back(consume());
                 }
             }
-            try_consume_err(TokenType::semi);
+            if (has_smit) {
+                try_consume_err(TokenType::semi);
+            } else {
+                try_consume(TokenType::semi);
+            }
             auto stmt = m_allocator.alloc<NodeStmt>();
             stmt->var = stmt_macros_commands;
             return stmt;
@@ -559,7 +723,7 @@ public:
         if (const auto while_ = try_consume(TokenType::while_)) {
             try_consume_err(TokenType::open_paren);
             auto stmt_while = m_allocator.alloc<NodeStmtWhile>();
-            if (const auto expr = pares_expr()) {
+            if (const auto expr = parse_expr()) {
                 stmt_while->expr = expr.value();
             } else {
                 error_msg("Invalid expression");
@@ -579,18 +743,18 @@ public:
             try_consume_err(TokenType::open_paren);
             auto stmt_for = m_allocator.alloc<NodeStmtFor>();
             if (const auto stmt = parse_stmt()) {
-                 stmt_for->let = stmt.value();
+                stmt_for->let = stmt.value();
             } else {
                 error_expected("statement");
             }
-            if (const auto expr = pares_expr()) {
+            if (const auto expr = parse_expr()) {
                 stmt_for->expr = expr.value();
             } else {
                 error_msg("Invalid expression");
             }
             try_consume_err(TokenType::semi);
-            if (const auto expr = pares_expr()) {
-                stmt_for->end = expr.value();
+            if (const auto stmt = parse_stmt(false)) {
+                stmt_for->end = stmt.value();
             } else {
                 error_msg("Invalid expression");
             }
@@ -605,6 +769,105 @@ public:
             }
             auto stmt = m_allocator.alloc<NodeStmt>();
             stmt->var = stmt_for;
+            return stmt;
+        }
+        if (const auto command = try_consume(TokenType::wait)) {
+            auto stmt_wait = m_allocator.alloc<NodeStmtWait>();
+            if (auto expr = parse_expr()) {
+                stmt_wait->expr = expr.value();
+            } else {
+                error_msg("Invalid expression");
+            }
+            if (has_smit) {
+                try_consume_err(TokenType::semi);
+            } else {
+                try_consume(TokenType::semi);
+            }
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_wait;
+            return stmt;
+        }
+        if (const auto struct_ = try_consume(TokenType::struct_)) {
+            if (const auto ident = try_consume(TokenType::ident)) {
+                auto stmt_struct = m_allocator.alloc<NodeStmtStruct>();
+                stmt_struct->ident = ident.value();
+                try_consume_err(TokenType::open_curly);
+                std::vector<NodeStmtDefinition *> attributes;
+                while (auto var = parse_struct_attribute()) {
+                    attributes.push_back(var.value());
+                }
+                stmt_struct->attributes = attributes;
+                try_consume_err(TokenType::close_curly);
+                try_consume_err(TokenType::semi);
+                auto stmt_def = m_allocator.alloc<NodeStmtDefinition>();
+                stmt_def->var = stmt_struct;
+                auto stmt = m_allocator.alloc<NodeStmt>();
+                stmt->var = stmt_def;
+                return stmt;
+            }
+            error_expected("identifier");
+        }
+        if (const auto struct_ = try_consume(TokenType::assert)) {
+            if (const auto expr = parse_expr()) {
+                if (has_smit) {
+                    try_consume_err(TokenType::semi);
+                } else {
+                    try_consume(TokenType::semi);
+                }
+                auto *stmt_assert = m_allocator.alloc<NodeStmtAssert>();
+                stmt_assert->line = struct_->line;
+                stmt_assert->file_name = m_file_path;
+                stmt_assert->expr = expr.value();
+                auto *stmt = m_allocator.alloc<NodeStmt>();
+                stmt->var = stmt_assert;
+                return stmt;
+            }
+            error_msg("Invalid expression");
+        }
+        if (peek().has_value() && peek().value().type == TokenType::null && peek(1).has_value() && peek(1).value().type
+            == TokenType::eq) {
+            consume();
+            consume();
+            if (auto expr = parse_expr()) {
+                if (has_smit) {
+                    try_consume_err(TokenType::semi);
+                } else {
+                    try_consume(TokenType::semi);
+                }
+                auto stmt_null_assign = m_allocator.alloc<NodeStmtNullAssign>();
+                stmt_null_assign->expr = expr.value();
+                auto stmt = m_allocator.alloc<NodeStmt>();
+                stmt->var = stmt_null_assign;
+                return stmt;
+            }
+            error_msg("Invalid expression");
+        }
+        if (const auto term = parse_term()) {
+            try_consume_err(TokenType::eq);
+            if (const auto expr = parse_expr()) {
+                if (has_smit) {
+                    try_consume_err(TokenType::semi);
+                } else {
+                    try_consume(TokenType::semi);
+                }
+                auto stmt_let_attribute = m_allocator.alloc<NodeStmtAssignAttribute>();
+                stmt_let_attribute->ident = term.value();
+                stmt_let_attribute->expr = expr.value();
+                auto stmt = m_allocator.alloc<NodeStmt>();
+                stmt->var = stmt_let_attribute;
+                return stmt;
+            }
+        }
+        if (const auto expr = parse_expr()) {
+            if (has_smit) {
+                try_consume_err(TokenType::semi);
+            } else {
+                try_consume(TokenType::semi);
+            }
+            auto stmt_null_assign = m_allocator.alloc<NodeStmtNullAssign>();
+            stmt_null_assign->expr = expr.value();
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_null_assign;
             return stmt;
         }
         return {};

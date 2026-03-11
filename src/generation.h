@@ -5,14 +5,338 @@
 
 #include "parser.h"
 
-inline auto VERSION = "v0.1.0";
+const inline auto VERSION = "v0.1.0";
+
+class MemoryManagement {
+public:
+    struct MemoryBlock {
+        size_t size;
+        size_t point = -1;
+    };
+
+    explicit MemoryManagement(std::string file_name)
+        : m_file_name(std::move(file_name)) {
+    }
+
+    MemoryBlock new_memory(const size_t len) {
+        MemoryBlock memory_block{.size = len};
+        if (free_memory.empty()) {
+            memory_block.point = m_heap_size;
+            using_memory.push_back(memory_block);
+            m_heap_size += len;
+        } else {
+            MemoryBlock &min_memory_block = free_memory.at(0);
+            for (const MemoryBlock block: free_memory) {
+                if (block.size >= len) {
+                    if (min_memory_block.size > block.size) {
+                        min_memory_block = block;
+                    }
+                }
+            }
+            if (min_memory_block.size == len) {
+                using_memory.push_back(min_memory_block);
+                std::swap(min_memory_block, free_memory.back());
+                free_memory.pop_back();
+                memory_block = min_memory_block;
+            } else {
+                min_memory_block.size -= len;
+                memory_block.point = min_memory_block.point;
+                min_memory_block.point += len;
+            }
+        }
+        return memory_block;
+    }
+
+    [[nodiscard]] size_t get_heap_size() const {
+        return m_heap_size;
+    }
+
+private:
+    std::string m_file_name;
+    size_t m_heap_size = 1;
+    std::vector<MemoryBlock> using_memory{};
+    std::vector<MemoryBlock> free_memory{};
+};
 
 class Generator {
 public:
+    struct Var {
+        std::string name;
+        std::string type;
+        size_t stack_loc;
+        MemoryManagement::MemoryBlock memory_block{};
+        std::vector<Var> vars{};
+        std::vector<NodeExpr *> expr{};
+        std::vector<NodeStmtDefinition> def{};
+    };
+
     explicit Generator(NodeProg prog, std::string file_name, std::string file_path)
         : m_prog(std::move(prog)), m_file_name(std::move(file_name)), m_file_path(std::move(file_path)) {
         std::fstream os(m_file_path + "main.mcfunction", std::ios::out);
         m_output = std::move(os);
+        m_output_basic_fstream = &m_output;
+        m_vars.push_back(m_int_type);
+        m_vars.push_back(m_struct_type);
+    }
+
+    void gen_term_attribute(const NodeTermAttribute &term_attribute,
+                            const std::vector<Var> &att_vars,
+                            const std::optional<std::string> &conditions = {},
+                            const bool point_offset = false) {
+        struct TermVisitor {
+            Generator &gen;
+            const NodeTermAttribute &term_attribute;
+            const std::optional<std::string> &conditions = {};
+            const bool point_offset;
+            const std::vector<Var> &att_vars;
+
+            void operator()(const NodeTermIntLit *term_int_lit) const {
+            }
+
+            void operator()(const NodeTermIdent *term_ident) const {
+                const auto obj = std::find_if(
+                    att_vars.cbegin(),
+                    att_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == term_attribute.ident.value.value();
+                    });
+                if (obj == att_vars.cend()) {
+                    print_error("Undeclared identifier: " + term_ident->ident.value.value());
+                }
+                size_t point = point_offset + (point_offset ? -1 : obj->memory_block.point);
+                const auto ty = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == obj->type;
+                    });
+                if (ty == gen.m_vars.cend()) {
+                    print_error("Undeclared type: " + obj->type);
+                }
+                for (const auto &v: ty->vars) {
+                    if (v.name == term_ident->ident.value.value()) {
+                        goto has_var;
+                    }
+                    point++;
+                }
+                print_error("Undeclared identifier: " + term_ident->ident.value.value());
+            has_var:
+                if (point_offset == 0) {
+                    std::stringstream offset;
+                    offset << "__heap[" << point << "]";
+                    gen.push(offset.str(), conditions);
+                } else {
+                    if (point != 0) {
+                        gen.push_int(std::to_string(point), conditions);
+                        gen.stack_add(conditions);
+                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                                   conditions);
+                    }
+                    gen.pop_to_nbt("hg.index", conditions);
+                    gen.output(
+                        "execute store result storage minecraft:__" + gen.m_file_name + " rax int 1 run function " + gen
+                        .m_file_name + ":__util/get_heap_value with storage minecraft:__" + gen.m_file_name + " hg\n",
+                        conditions);
+                    gen.push("rax", conditions);
+                }
+            }
+
+            void operator()(const NodeTermParen *term_paren) const {
+            }
+
+            void operator()(const NodeTermPlusPlus *term_plus_plus) const {
+            }
+
+            void operator()(const NodeTermMinusMinus *term_minus_minus) const {
+            }
+
+            void operator()(const NodeTermTime *term_time) const {
+            }
+
+            void operator()(const NodeTermNull *term_null) const {
+            }
+
+            void operator()(const NodeTermAttribute *term_attribute_) const {
+                const auto obj = std::find_if(
+                    att_vars.cbegin(),
+                    att_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == term_attribute.ident.value.value();
+                    });
+                if (obj == att_vars.cend()) {
+                    print_error("Undeclared identifier: " + term_attribute_->ident.value.value());
+                }
+                size_t point = point_offset + obj->memory_block.point;
+                const auto ty = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == obj->type;
+                    });
+                if (ty == gen.m_vars.cend()) {
+                    print_error("Undeclared type: " + obj->type);
+                }
+                for (const auto &v: ty->vars) {
+                    if (v.name == term_attribute_->ident.value.value()) {
+                        goto has_var;
+                    }
+                    point++;
+                }
+                print_error("Undeclared identifier: " + term_attribute_->ident.value.value());
+            has_var:
+                if (point_offset == 0) {
+                    std::stringstream offset;
+                    offset << "__heap[" << point << "]";
+                    gen.push(offset.str(), conditions);
+                    gen.gen_term_attribute(*term_attribute_, ty->vars, conditions, true);
+                } else {
+                    if (point != 0) {
+                        gen.push_int(std::to_string(point), conditions);
+                        gen.stack_add(conditions);
+                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                                   conditions);
+                    }
+                    gen.pop_to_nbt("hg.index", conditions);
+                    gen.output(
+                        "execute store result storage minecraft:__" + gen.m_file_name + " rax int 1 run function " + gen
+                        .m_file_name + ":__util/get_heap_value with storage minecraft:__" + gen.m_file_name + " hg\n",
+                        conditions);
+                    gen.push("rax", conditions);
+                    gen.gen_term_attribute(*term_attribute_, ty->vars, conditions, true);
+                }
+            }
+        };
+        TermVisitor visitor({
+            .gen = *this, .term_attribute = term_attribute, .conditions = conditions,
+            .point_offset = point_offset, .att_vars = att_vars
+        });
+        std::visit(visitor, term_attribute.var->var);
+    }
+
+    void push_var_point(const NodeTermAttribute &term_attribute,
+                        const std::vector<Var> &att_vars,
+                        const std::optional<std::string> &conditions = {},
+                        const bool point_offset = false) {
+        struct TermVisitor {
+            Generator &gen;
+            const NodeTermAttribute &term_attribute;
+            const std::optional<std::string> &conditions = {};
+            const bool point_offset;
+            const std::vector<Var> &att_vars;
+
+            void operator()(const NodeTermIntLit *term_int_lit) const {
+            }
+
+            void operator()(const NodeTermIdent *term_ident) const {
+                const auto obj = std::find_if(
+                    att_vars.cbegin(),
+                    att_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == term_attribute.ident.value.value();
+                    });
+                if (obj == att_vars.cend()) {
+                    print_error("Undeclared identifier: " + term_ident->ident.value.value());
+                }
+                size_t point = point_offset + (point_offset ? -1 : obj->memory_block.point);
+                const auto ty = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == obj->type;
+                    });
+                if (ty == gen.m_vars.cend()) {
+                    print_error("Undeclared type: " + obj->type);
+                }
+                for (const auto &v: ty->vars) {
+                    if (v.name == term_ident->ident.value.value()) {
+                        goto has_var;
+                    }
+                    point++;
+                }
+                print_error("Undeclared identifier: " + term_ident->ident.value.value());
+            has_var:
+                if (point_offset == 0) {
+                    gen.push_int(std::to_string(point), conditions);
+                } else {
+                    if (point != 0) {
+                        gen.push_int(std::to_string(point), conditions);
+                        gen.stack_add(conditions);
+                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                                   conditions);
+                    }
+                }
+            }
+
+            void operator()(const NodeTermParen *term_paren) const {
+            }
+
+            void operator()(const NodeTermPlusPlus *term_plus_plus) const {
+            }
+
+            void operator()(const NodeTermMinusMinus *term_minus_minus) const {
+            }
+
+            void operator()(const NodeTermTime *term_time) const {
+            }
+
+            void operator()(const NodeTermNull *term_null) const {
+            }
+
+            void operator()(const NodeTermAttribute *term_attribute_) const {
+                const auto obj = std::find_if(
+                    att_vars.cbegin(),
+                    att_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == term_attribute.ident.value.value();
+                    });
+                if (obj == att_vars.cend()) {
+                    print_error("Undeclared identifier: " + term_attribute_->ident.value.value());
+                }
+                size_t point = point_offset + obj->memory_block.point;
+                const auto ty = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == obj->type;
+                    });
+                if (ty == gen.m_vars.cend()) {
+                    print_error("Undeclared type: " + obj->type);
+                }
+                for (const auto &v: ty->vars) {
+                    if (v.name == term_attribute_->ident.value.value()) {
+                        goto has_var;
+                    }
+                    point++;
+                }
+                print_error("Undeclared identifier: " + term_attribute_->ident.value.value());
+            has_var:
+                if (point_offset == 0) {
+                    std::stringstream offset;
+                    offset << "__heap[" << point << "]";
+                    gen.push(offset.str(), conditions);
+                    gen.push_var_point(*term_attribute_, ty->vars, conditions, true);
+                } else {
+                    if (point != 0) {
+                        gen.push_int(std::to_string(point), conditions);
+                        gen.stack_add(conditions);
+                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                                   conditions);
+                    }
+                    gen.pop_to_nbt("hg.index", conditions);
+                    gen.output(
+                        "execute store result storage minecraft:__" + gen.m_file_name + " rax int 1 run function " + gen
+                        .m_file_name + ":__util/get_heap_value with storage minecraft:__" + gen.m_file_name + " hg\n",
+                        conditions);
+                    gen.push("rax", conditions);
+                    gen.push_var_point(*term_attribute_, ty->vars, conditions, true);
+                }
+            }
+        };
+        TermVisitor visitor({
+            .gen = *this, .term_attribute = term_attribute, .conditions = conditions,
+            .point_offset = point_offset, .att_vars = att_vars
+        });
+        std::visit(visitor, term_attribute.var->var);
     }
 
     void gen_term(const NodeTerm *term, const std::optional<std::string> &conditions = {}) {
@@ -67,7 +391,7 @@ public:
                     "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
                     " set from storage minecraft:__" + gen.m_file_name + " pp\n",
                     conditions);
-                gen.push("pp");
+                gen.push("pp", conditions);
             }
 
             void operator()(const NodeTermMinusMinus *term_minus_minus) const {
@@ -94,7 +418,20 @@ public:
                     "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
                     " set from storage minecraft:__" + gen.m_file_name + " pp\n",
                     conditions);
-                gen.push("pp");
+                gen.push("pp", conditions);
+            }
+
+            void operator()(const NodeTermTime *term_time) const {
+                gen.to_nbt("__time", conditions);
+                gen.push("__time", conditions);
+            }
+
+            void operator()(const NodeTermNull *term_null) const {
+                gen.push_int("0", conditions);
+            }
+
+            void operator()(const NodeTermAttribute *term_attribute) const {
+                gen.gen_term_attribute(*term_attribute, gen.m_vars, conditions);
             }
         };
         TermVisitor visitor({.gen = *this, .conditions = conditions});
@@ -267,6 +604,17 @@ public:
                 gen.to_nbt("rax", conditions);
                 gen.push("rax", conditions);
             }
+
+            void operator()(const NodeBinExprMod *mod) const {
+                gen.gen_expr(mod->rhs, conditions);
+                gen.gen_expr(mod->lhs, conditions);
+                gen.pop("rax", conditions);
+                gen.pop("rbx", conditions);
+                gen.output("scoreboard players operation rax __" + gen.m_file_name + " %= rbx __" + gen.
+                           m_file_name + "\n", conditions);
+                gen.to_nbt("rax", conditions);
+                gen.push("rax", conditions);
+            }
         };
 
         BinExprVisitor visitor{.gen = *this, .conditions = conditions};
@@ -333,17 +681,27 @@ public:
 
     void gen_scope(const NodeScope *scope, const std::optional<std::string> &conditions = {}) {
         if (scope->is_outline) {
-            std::fstream old_fstream = std::move(m_output);
             m_output = create_new_function_file();
-            std::string function_name = get_function_file_name();
+            const std::string function_name = get_function_file_name();
             begin_scope();
             for (const NodeStmt *stmt: scope->stmts) {
                 gen_stmt(stmt, {}, {}, conditions);
             }
             end_scope();
-            m_output.close();
-            m_output = std::move(old_fstream);
-            output("function " + m_file_name + ":" + function_name + "\n", conditions);
+            if (scope->stmts.size() >= 10) {
+                std::fstream continue_file = create_new_function_file();
+                const std::string continue_function_name = get_function_file_name();
+                output("function " + m_file_name + ":" + continue_function_name + " 1t append\n", conditions);
+                m_output.close();
+                m_output = std::move(*m_output_basic_fstream);
+                output("schedule function " + m_file_name + ":" + function_name + " 1t append\n", conditions);
+                m_output = std::move(continue_file);
+                m_output_basic_fstream = &m_output;
+            } else {
+                m_output.close();
+                m_output = std::move(*m_output_basic_fstream);
+                output("function " + m_file_name + ":" + function_name + "\n", conditions);
+            }
         } else {
             begin_scope();
             for (const NodeStmt *stmt: scope->stmts) {
@@ -353,21 +711,24 @@ public:
         }
     }
 
-    void gen_while(const NodeExpr *expr, const NodeScope *scope, const std::optional<NodeExpr *> &expr_conditions = {}, const std::optional<std::string> &conditions = {}) {
+    void gen_while(const NodeExpr *expr, const std::optional<NodeScope *> scope,
+                   const std::optional<NodeStmt *> &stmt_conditions = {},
+                   const std::optional<std::string> &conditions = {}) {
         std::fstream old_fstream = std::move(m_output);
         m_output = create_new_function_file();
         const std::string function_name = get_function_file_name();
         gen_expr(expr, conditions);
-        pop("rax");
+        pop("rax", conditions);
         output(
             "execute if score rax __" + m_file_name + " matches 0 run return 0\n", conditions);
         begin_scope();
-        for (const NodeStmt *stmt: scope->stmts) {
-            gen_stmt(stmt, {}, {}, conditions);
+        if (scope.has_value()) {
+            for (const NodeStmt *stmt: scope.value()->stmts) {
+                gen_stmt(stmt, {}, {}, conditions);
+            }
         }
-        if (expr_conditions.has_value()) {
-            gen_expr(expr_conditions.value(), conditions);
-            only_pop(conditions);
+        if (stmt_conditions.has_value()) {
+            gen_stmt(stmt_conditions.value(), {}, {}, conditions);
         }
         end_scope();
         output("function " + m_file_name + ":" + function_name + "\n", conditions);
@@ -420,6 +781,200 @@ public:
         std::visit(visitor, pred->var);
     }
 
+    void gen_stmt_struct(const NodeStmtStruct *stmt_struct, const std::optional<std::string> &conditions = {}) {
+        const auto it = std::find_if(
+            m_vars.cbegin(),
+            m_vars.cend(),
+            [&](const Var &var) {
+                return var.name == stmt_struct->ident.value.value();
+            });
+        if (it != m_vars.cend()) {
+            print_error("Identifier already used:" + stmt_struct->ident.value.value());
+        }
+        std::vector<Var> names;
+        std::vector<NodeExpr *> exprs;
+        std::vector<NodeStmtDefinition> def;
+        size_t len = 0;
+        gen_stmt_struct_attribute(names, exprs, def, stmt_struct->attributes, len);
+        m_vars.push_back({
+            .name = stmt_struct->ident.value.value(),
+            .type = m_struct_type.name,
+            .stack_loc = m_stack_size,
+            .memory_block = MemoryManagement::MemoryBlock{.size = len},
+            .vars = names,
+            .expr = exprs,
+            .def = def
+        });
+    }
+
+    void gen_stmt_definition(const NodeStmtDefinition *definition, const std::optional<std::string> &conditions = {},
+                             const bool no_var = false) {
+        struct DefinitionVisitor {
+            Generator &gen;
+            const bool no_var;
+            const std::optional<std::string> &conditions;
+
+            void operator()(const NodeStmtLet *stmt_let) const {
+                const auto it = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == stmt_let->ident.value.value();
+                    });
+                if (it != gen.m_vars.cend()) {
+                    print_error("Identifier already used:" + stmt_let->ident.value.value());
+                }
+                if (!no_var) {
+                    gen.m_vars.push_back({
+                        .name = stmt_let->ident.value.value(),
+                        .stack_loc = gen.m_stack_size
+                    });
+                }
+                gen.gen_expr(stmt_let->expr, conditions);
+            }
+
+            void operator()(const NodeStmtStruct *stmt_struct) const {
+                gen.gen_stmt_struct(stmt_struct, conditions);
+            }
+
+            void operator()(const NodeStmtCustomType *stmt_custom) const {
+                assert(false && "fuck your mother and father");
+            }
+
+            void operator()(const NodeStmtDeclarationVariable *stmt_declaration_variable) const {
+                const auto it = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == stmt_declaration_variable->ident.value.value();
+                    });
+                if (it != gen.m_vars.cend()) {
+                    print_error("Identifier already used:" + stmt_declaration_variable->ident.value.value());
+                }
+                if (stmt_declaration_variable->ident_type.type == TokenType::ty_int) {
+                    gen.m_vars.push_back({
+                        .name = stmt_declaration_variable->ident.value.value(),
+                        .type = gen.m_int_type.name,
+                        .stack_loc = gen.m_stack_size
+                    });
+                    gen.push_int("0", conditions);
+                } else {
+                    const auto it_type = std::find_if(
+                        gen.m_vars.cbegin(),
+                        gen.m_vars.cend(),
+                        [stmt_declaration_variable](const Var &var) {
+                            return var.name == stmt_declaration_variable->ident_type.value.value();
+                        });
+                    if (it_type == gen.m_vars.cend()) {
+                        print_error("Undefined type: " + stmt_declaration_variable->ident_type.value.value());
+                    }
+                    const Var v({
+                        .name = stmt_declaration_variable->ident.value.value(),
+                        .type = it_type->name,
+                        .stack_loc = gen.m_stack_size,
+                        .memory_block = gen.m_memory_management.new_memory(it_type->memory_block.size)
+                    });
+                    gen.push_int(std::to_string(v.memory_block.point), conditions);
+                    for (int i = 0; i < it_type->vars.size(); i++) {
+                        if (it_type->expr.at(i) != nullptr) {
+                            gen.gen_expr(it_type->expr.at(i), conditions);
+                        } else {
+                            gen.gen_stmt_definition(&it_type->def.at(i), conditions, true);
+                        }
+                        gen.pop_to_nbt("rax", conditions);
+                        gen.set_heap_reg(v.memory_block.point + i, "rax", conditions);
+                    }
+                    if (!no_var) {
+                        gen.m_vars.push_back(v);
+                    }
+                }
+            }
+        };
+
+        DefinitionVisitor visitor({.gen = *this, .no_var = no_var, .conditions = conditions});
+        std::visit(visitor, definition->var);
+    }
+
+    void gen_stmt_struct_attribute(std::vector<Var> &vars, std::vector<NodeExpr *> &values,
+                                   std::vector<NodeStmtDefinition> &def,
+                                   const std::vector<NodeStmtDefinition *> &attributes,
+                                   size_t &len,
+                                   const std::optional<std::string> &conditions = {}) {
+        struct DefinitionVisitor {
+            Generator &gen;
+            std::vector<Var> &vars;
+            std::vector<NodeExpr *> &values;
+            std::vector<NodeStmtDefinition> &def;
+            size_t &len;
+            const std::optional<std::string> &conditions;
+
+            void operator()(const NodeStmtLet *stmt_let) const {
+                const auto it = std::find_if(
+                    vars.cbegin(),
+                    vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == stmt_let->ident.value.value();
+                    });
+                if (it != vars.cend()) {
+                    print_error("Identifier already used:" + stmt_let->ident.value.value());
+                }
+                len++;
+                vars.push_back({
+                    .name = stmt_let->ident.value.value(),
+                    .type = gen.m_int_type.name,
+                    .stack_loc = gen.m_stack_size
+                });
+                values.push_back(stmt_let->expr);
+                def.emplace_back();
+            }
+
+            void operator()(const NodeStmtStruct *stmt_struct) const {
+                print_error("You cannot define a struct in a struct");
+            }
+
+            void operator()(const NodeStmtCustomType *stmt_custom) const {
+                assert(false);
+            }
+
+            void operator()(NodeStmtDeclarationVariable *stmt_declaration_variable) const {
+                const auto it = std::find_if(
+                    vars.cbegin(),
+                    vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == stmt_declaration_variable->ident.value.value();
+                    });
+                if (it != vars.cend()) {
+                    print_error("Identifier already used: " + stmt_declaration_variable->ident.value.value());
+                }
+                const auto ty = std::find_if(
+                    gen.m_vars.cbegin(),
+                    gen.m_vars.cend(),
+                    [&](const Var &var) {
+                        return var.name == stmt_declaration_variable->ident_type.value.value();
+                    });
+                if (ty == gen.m_vars.cend()) {
+                    print_error("Undefined type: " + stmt_declaration_variable->ident_type.value.value());
+                }
+                len++;
+                vars.push_back({
+                    .name = stmt_declaration_variable->ident.value.value(),
+                    .type = stmt_declaration_variable->ident_type.value.value(),
+                    .stack_loc = gen.m_stack_size
+                });
+                values.push_back(nullptr);
+                def.push_back({.var = stmt_declaration_variable});
+            }
+        };
+
+        DefinitionVisitor visitor({
+            .gen = *this, .vars = vars, .values = values, .def = def, .len = len, .conditions = conditions
+        });
+
+        for (auto &attribute: attributes) {
+            std::visit(visitor, attribute->var);
+        }
+    }
+
     void gen_stmt(const NodeStmt *stmt, std::optional<std::fstream> ff = {},
                   std::optional<int> lc = {},
                   const std::optional<std::string> &conditions = {}) {
@@ -436,18 +991,8 @@ public:
                 gen.m_output << "# program is stop.\n";
             }
 
-            void operator()(const NodeStmtLet *stmt_let) const {
-                const auto it = std::find_if(
-                    gen.m_vars.cbegin(),
-                    gen.m_vars.cend(),
-                    [&](const Var &var) {
-                        return var.name == stmt_let->ident.value.value();
-                    });
-                if (it != gen.m_vars.cend()) {
-                    print_error("Identifier already used:" + stmt_let->ident.value.value());
-                }
-                gen.m_vars.push_back({.name = stmt_let->ident.value.value(), .stack_loc = gen.m_stack_size});
-                gen.gen_expr(stmt_let->expr, conditions);
+            void operator()(const NodeStmtDefinition *stmt_definition) const {
+                gen.gen_stmt_definition(stmt_definition, conditions);
             }
 
             void operator()(const NodeStmtAssign *stmt_assign) const {
@@ -515,16 +1060,14 @@ public:
                     function_file.close();
                     gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
                     for (int i = 0; i < label_count; ++i) {
-                        gen.output(
-                            "data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label(i) +
-                            " set from storage minecraft:__"
-                            + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
+                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label(i) +
+                                   " set from storage minecraft:__"
+                                   + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
                     }
-                    gen.output(
-                        "function " + gen.m_file_name + ":" + gen.get_function_file_name() +
-                        " with storage minecraft:__" +
-                        gen.m_file_name + " r\n",
-                        conditions);
+                    gen.output("function " + gen.m_file_name + ":" + gen.get_function_file_name() +
+                               " with storage minecraft:__" +
+                               gen.m_file_name + " r\n",
+                               conditions);
                     for (int i = 0; i < label_count; ++i) gen.released_label();
                 }
             }
@@ -536,6 +1079,60 @@ public:
             void operator()(const NodeStmtFor *stmt_for) const {
                 gen.gen_stmt(stmt_for->let, {}, {}, conditions);
                 gen.gen_while(stmt_for->expr, stmt_for->while_->scope, stmt_for->end, conditions);
+            }
+
+            void operator()(const NodeStmtWait *stmt_wait) const {
+                std::fstream new_file = gen.create_new_function_file();
+                const std::string new_file_name = gen.m_file_name + ":" + gen.get_function_file_name();
+                gen.gen_expr(stmt_wait->expr, conditions);
+                gen.output("data modify storage minecraft:__" + gen.m_file_name + " w set value {}\n", conditions);
+                gen.output(
+                    "data modify storage minecraft:__" + gen.m_file_name + " w.func set value \"" + new_file_name +
+                    "\"\n",
+                    conditions);
+                gen.pop("rax", conditions);
+                gen.to_nbt("rax", conditions);
+                gen.move_reg("w.time", "rax", conditions);
+                gen.output(
+                    "execute unless score rax __" + gen.m_file_name + " matches 0 run function " + gen.m_file_name +
+                    ":__util/wait_func with storage minecraft:__" + gen.m_file_name +
+                    " w\n", conditions);
+                gen.output(
+                    "execute if score rax __" + gen.m_file_name + " matches 0 run function " + new_file_name + "\n",
+                    conditions);
+                gen.output("return 0\n", conditions);
+                gen.output("function " + new_file_name + "\n", {});
+                gen.m_output.close();
+                gen.m_output = std::move(new_file);
+                gen.m_output_basic_fstream = &gen.m_output;
+            }
+
+            void operator()(const NodeStmtAssert *stmt_assert) const {
+                gen.gen_expr(stmt_assert->expr, conditions);
+                gen.pop("rax", conditions);
+                gen.output(
+                    "execute if score rax __" + gen.m_file_name +
+                    R"( matches 0 run tellraw @a {"color":"red","text":"Assertion triggered at line )"
+                    + std::to_string(stmt_assert->line) + " in file " + stmt_assert->file_name + "\"}\n", conditions);
+                gen.output("execute if score rax __" + gen.m_file_name + " matches 0 run return 0\n", conditions);
+            }
+
+            void operator()(const NodeStmtNullAssign *stmt_null_assign) const {
+                gen.gen_expr(stmt_null_assign->expr, conditions);
+                gen.only_pop(conditions);
+            }
+
+            void operator()(const NodeStmtAssignAttribute *stmt_assign_attribute) const {
+                gen.push_var_point(*std::get<NodeTermAttribute *>(stmt_assign_attribute->ident->var), gen.m_vars,
+                                   conditions);
+                gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                           conditions);
+                gen.pop_to_nbt("hg.index", conditions);
+                gen.gen_expr(stmt_assign_attribute->expr, conditions);
+                gen.pop_to_nbt("hg.value", conditions);
+                gen.output(
+                    "function " + gen.m_file_name + ":__util/set_heap_value with storage minecraft:__" + gen.m_file_name
+                    + " hg\n", conditions);
             }
         };
 
@@ -559,32 +1156,44 @@ public:
     void gen_prog() {
         m_output << "# Generated by RedScript " << VERSION << "\n";
         m_output << "data modify storage minecraft:__" << m_file_name << " __stack set value []\n";
-        m_output << "scoreboard objectives add __test dummy\n";
+        m_output << "data modify storage minecraft:__" << m_file_name << " __heap set value []\n";
+        m_output << "data modify storage minecraft:__" << m_file_name << " __heap append value 0\n";
+        m_output << "scoreboard objectives add __" << m_file_name << " dummy\n";
+        m_output << "scoreboard players set __time __" << m_file_name << " 0\n";
         m_output << "scoreboard objectives add _int_ dummy\n";
+        m_output << "function " + m_file_name + ":__util/reset_heap\n";
 
         for (const NodeStmt *stmt: m_prog.stmts) {
             gen_stmt(stmt);
         }
 
-        m_output << "return 0\n";
-        m_output << "# program is stop.";
         m_output.close();
     }
 
 private:
-    void push(const std::string &reg, const std::optional<std::string> &conditions = {}) {
+    Var m_int_type{
+        .name = "int",
+        .memory_block = MemoryManagement::MemoryBlock{.size = 1}
+    };
+
+    Var m_struct_type{
+        .name = "struct",
+        .memory_block = MemoryManagement::MemoryBlock{.size = 1}
+    };
+
+    void push(const std::string &reg, const std::optional<std::string> &conditions) {
         output(
             "data modify storage minecraft:__" + m_file_name + " __stack append from storage minecraft:__" +
             m_file_name + " " + reg + "\n", conditions);
         m_stack_size++;
     }
 
-    void push_int(const std::string &value, const std::optional<std::string> &conditions = {}) {
-        output("data modify storage minecraft:__test __stack append value " + value + "\n", conditions);
+    void push_int(const std::string &value, const std::optional<std::string> &conditions) {
+        output("data modify storage minecraft:__" + m_file_name + " __stack append value " + value + "\n", conditions);
         m_stack_size++;
     }
 
-    void pop(const std::string &reg, const std::optional<std::string> &conditions = {}) {
+    void pop(const std::string &reg, const std::optional<std::string> &conditions) {
         output(
             "execute store result score " + reg + " __" + m_file_name + " run data get storage minecraft:__" +
             m_file_name +
@@ -593,7 +1202,31 @@ private:
         m_stack_size--;
     }
 
-    void pop_to_nbt(const std::string &reg, const std::optional<std::string> &conditions = {}) {
+    void set_heap_value(const size_t address, const std::string &value,
+                        const std::optional<std::string> &conditions) {
+        output(
+            "data modify storage minecraft:__" + m_file_name + " __heap[" + std::to_string(address) + "] set value "
+            +
+            value + "\n",
+            conditions);
+    }
+
+    void set_heap_reg(const size_t address, const std::string &reg,
+                      const std::optional<std::string> &conditions) {
+        output(
+            "data modify storage minecraft:__" + m_file_name + " __heap[" + std::to_string(address) + "]" +
+            " set from storage minecraft:__" + m_file_name + " " +
+            reg + "\n",
+            conditions);
+    }
+
+    void add_heap_value(const std::optional<std::string> &conditions) {
+        output(
+            "data modify storage minecraft:__" + m_file_name + " __heap append value []\n",
+            conditions);
+    }
+
+    void pop_to_nbt(const std::string &reg, const std::optional<std::string> &conditions) {
         output(
             "execute store result storage minecraft:__" + m_file_name + " " + reg +
             " int 1 run data get storage minecraft:__" +
@@ -602,20 +1235,20 @@ private:
         m_stack_size--;
     }
 
-    void only_pop(const std::optional<std::string> &conditions = {}) {
+    void only_pop(const std::optional<std::string> &conditions) {
         output("data remove storage minecraft:__" + m_file_name + " __stack[-1]\n", conditions);
         m_stack_size--;
     }
 
-    void move_int(const std::string &reg, const std::string &value, const std::optional<std::string> &conditions = {}) {
+    void move_int(const std::string &reg, const std::string &value, const std::optional<std::string> &conditions) {
         m_output << "data modify storage minecraft:__" << m_file_name << " " << reg << " set value " <<
                 value << "\n";
         output("scoreboard players set " + reg + " __" + m_file_name + " " + value + "\n", conditions);
     }
 
-    void move_reg(const std::string &reg, const std::string &ret) {
-        m_output << "data modify storage minecraft:__" << m_file_name << " " << reg << " set from storage minecraft:__"
-                << m_file_name << " " << ret << "\n";
+    void move_reg(const std::string &reg, const std::string &ret, const std::optional<std::string> &conditions) {
+        output("data modify storage minecraft:__" + m_file_name + " " + reg + " set from storage minecraft:__"
+               + m_file_name + " " + ret + "\n", conditions);
     }
 
     void move_reg_add(const std::string &reg, const std::string &ret, const std::string &offset) {
@@ -625,7 +1258,7 @@ private:
         m_output << "scoreboard players operation r __" << m_file_name << " += " << offset << " _int_\n";
         m_output << "execute store result storage minecraft:__" << m_file_name <<
                 " r int 1 run scoreboard players get r __" << m_file_name << "\n";
-        move_reg(reg, "r");
+        move_reg(reg, "r", {});
     }
 
     void load_int(const std::string &i) {
@@ -636,32 +1269,55 @@ private:
         m_output << "data modify storage minecraft:__" << m_file_name << " r set value {\"ret\":" << ret << "\"}\n";
         m_output << "execute store result storage minecraft:__" << m_file_name <<
                 " r.index int 1 run data get storage minecraft:__" << m_file_name << " " << reg << "\n";
-        m_output << "function test:__util/get_data with storage minecraft:__" << m_file_name << " r\n";
+        m_output << "function " + m_file_name + ":__util/get_data with storage minecraft:__" << m_file_name << " r\n";
     }
 
     void score_move(const std::string &reg, const std::string &label,
-                    const std::optional<std::string> &conditions = {}) {
+                    const std::optional<std::string> &conditions) {
         output("scoreboard players operation " + label + " __" + m_file_name + " = " + reg + " __" + m_file_name + "\n",
                conditions);
     }
 
-    void to_nbt(const std::string &reg, const std::optional<std::string> &conditions = {}) {
+    void to_nbt(const std::string &reg, const std::optional<std::string> &conditions) {
         output("execute store result storage minecraft:__" + m_file_name +
                " " + reg + " int 1 run scoreboard players get " + reg + " __" + m_file_name + "\n", conditions);
     }
 
-    void output(const std::string &comm, const std::optional<std::string> &conditions = {}) {
+    void stack_add(const std::optional<std::string> &conditions) {
+        pop("rax", conditions);
+        pop("rbx", conditions);
+        output("scoreboard players operation rax __" + m_file_name + " += rbx __" +
+               m_file_name + "\n", conditions);
+        to_nbt("rax", conditions);
+        push("rax", conditions);
+    }
+
+    void output(const std::string &comm, const std::optional<std::string> &conditions) {
         if (conditions.has_value()) {
             m_output << "execute " << conditions.value() << "run " << comm;
         } else {
             m_output << comm;
         }
+        m_command_count++;
+        if (m_command_count > 65400) {
+            std::fstream new_function_file = create_new_function_file();
+            const std::string function_name = get_function_file_name();
+            m_output << "schedule function " << m_file_name << ":" << function_name << " 1t append\n";
+            m_output.close();
+            m_output = std::move(new_function_file);
+            m_output_basic_fstream = &m_output;
+            std::cerr << "Warring:The command exceeds the limit";
+        }
     }
 
     static void output(std::fstream &stream, const std::string &comm,
-                       const std::optional<std::string> &conditions = {}) {
+                       const std::optional<std::string> &conditions) {
         if (conditions.has_value()) {
-            stream << "execute " << conditions.value() << "run " << comm;
+            if (comm.at(0) == '$') {
+                stream << "$execute " << conditions.value() << "run " << comm.substr(1);
+            } else {
+                stream << "execute " << conditions.value() << "run " << comm;
+            }
         } else {
             stream << comm;
         }
@@ -674,7 +1330,7 @@ private:
     void end_scope() {
         const size_t pop_count = m_vars.size() - m_scopes.back();
         for (int i = 0; i < pop_count; i++) {
-            only_pop();
+            only_pop({});
             m_vars.pop_back();
         }
         m_scopes.pop_back();
@@ -697,6 +1353,7 @@ private:
         std::stringstream function_file_name;
         function_file_name << m_file_path << m_file_name << "_" << m_function_file_count << ".mcfunction";
         std::fstream function_file(function_file_name.str(), std::ios::out);
+        function_file << "# Generated by RedScript " << VERSION << "\n";
         m_function_file_count++;
         return function_file;
     }
@@ -720,31 +1377,29 @@ private:
                 gen_expr(stmt_macros_command->vars.at(label_count));
                 std::string label = create_label();
                 label_count++;
-                pop_to_nbt(label);
-                output(function_file, "$(" + label);
+                pop_to_nbt(label, {});
+                output(function_file, "$(" + label, {});
             } else {
-                output(function_file, command.value.value());
+                output(function_file, command.value.value(), {});
             }
         }
-        output(function_file, "\n");
+        output(function_file, "\n", {});
     }
 
     void released_label() {
         m_label_count--;
     }
 
-    struct Var {
-        std::string name;
-        size_t stack_loc;
-    };
-
     const NodeProg m_prog;
     const std::string m_file_name;
     const std::string m_file_path;
     std::fstream m_output;
+    std::fstream *m_output_basic_fstream;
     size_t m_stack_size = 0;
+    MemoryManagement m_memory_management{m_file_name};
     std::vector<Var> m_vars{};
     std::vector<size_t> m_scopes{};
     int m_label_count = 0;
+    int m_command_count = 20;
     int m_function_file_count = 0;
 };

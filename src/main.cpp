@@ -11,13 +11,15 @@
 
 namespace fs = std::filesystem;
 
+constexpr size_t HEAP_MAX_SIZE = 1024;
+
 bool create_folder_in_current_dir(const std::string &folder_name, const bool overwrite = true) {
     try {
         const fs::path target_path = fs::current_path() / folder_name;
         if (fs::exists(target_path)) {
             if (fs::is_directory(target_path)) {
                 if (overwrite) {
-                    std::cout << "Folder already exists: " << target_path << ", skip creation\n";
+                    // std::cout << "Folder already exists: " << target_path << ", skip creation\n";
                     return true;
                 }
                 throw std::runtime_error("Folder already exists: " + target_path.string());
@@ -27,7 +29,7 @@ bool create_folder_in_current_dir(const std::string &folder_name, const bool ove
         }
         const bool created = fs::create_directories(target_path);
         if (created) {
-            std::cout << "Folder created successfully: " << target_path << "\n";
+            // std::cout << "Folder created successfully: " << target_path << "\n";
         }
         return created;
     } catch (const fs::filesystem_error &e) {
@@ -56,11 +58,48 @@ void create_basic_environment(const std::string &project_name) {
     create_folder_in_current_dir(project_name + "/data/" + project_name + "/function/__util");
     create_folder_in_current_dir(project_name + "/data/" + project_name + "/tags");
     create_folder_in_current_dir(project_name + "/data/" + project_name + "/tags/function");
+    create_folder_in_current_dir(project_name + "/data/" + "minecraft");
+    create_folder_in_current_dir(project_name + "/data/" + "minecraft/tags");
+    create_folder_in_current_dir(project_name + "/data/" + "minecraft/tags/function");
     std::fstream get_var_func(project_name + "/data/" + project_name + "/function/__util/get_data.mcfunction",
                               std::ios::out);
     get_var_func << "$execute store result storage minecraft:__" << project_name <<
             " $(ret) int 1 run data get storage minecraft:__" << project_name << " __stack[$(index)] 1";
     get_var_func.close();
+    std::fstream get_heap_var(project_name + "/data/" + project_name + "/function/__util/get_data.mcfunction",
+                              std::ios::out);
+    get_heap_var << "$execute store result storage minecraft:__" << project_name <<
+            " $(ret) int 1 run data get storage minecraft:__" << project_name << " __stack[$(index)] 1";
+    get_heap_var.close();
+    std::fstream reset_heap(project_name + "/data/" + project_name + "/function/__util/reset_heap.mcfunction",
+                              std::ios::out);
+    for (int i = 0; i < HEAP_MAX_SIZE; ++i) {
+        reset_heap << "data modify storage minecraft:__" << project_name << " __heap append value 0\n";
+    }
+    reset_heap.close();
+    std::fstream get_heap_value(project_name + "/data/" + project_name + "/function/__util/get_heap_value.mcfunction",
+                              std::ios::out);
+    get_heap_value << "$return run data get storage minecraft:__" + project_name + " __heap[$(index)] 1\n";
+    get_heap_value.close();
+    std::fstream set_heap_value(project_name + "/data/" + project_name + "/function/__util/set_heap_value.mcfunction",
+                              std::ios::out);
+    set_heap_value << "$data modify storage minecraft:__" + project_name + " __heap[$(index)] set value $(value)\n";
+    set_heap_value.close();
+    std::fstream wait_func(project_name + "/data/" + project_name + "/function/__util/wait_func.mcfunction",
+                              std::ios::out);
+    wait_func << "$schedule function $(func) $(time)t append";
+    wait_func.close();
+    std::fstream time_add_func(project_name + "/data/" + project_name + "/function/__util/time_add.mcfunction",
+                              std::ios::out);
+    time_add_func << "scoreboard players add __time __" << project_name << " 1";
+    time_add_func.close();
+    std::fstream tick_func_tag(project_name + "/data/" + "minecraft/tags/function/tick.json", std::ios::out);
+    tick_func_tag << "{\n"
+            << "\t\"values\": [\n"
+            << "\t\t\"test:__util/time_add\"\n"
+            << "\t]\n"
+            << "}";
+    tick_func_tag.close();
     std::fstream tool_func_tag(project_name + "/data/" + project_name + "/tags/function/__util.json", std::ios::out);
     tool_func_tag << "{\n"
             << "\t\"values\": [\n"

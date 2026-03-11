@@ -190,6 +190,45 @@ outline {
 exit(0); // 退出程序
 ```
 
+### wait 等待(警告：不稳定)
+```RedScript
+wait 10; // 等待10 tick
+```
+
+### 断言
+```RedScript
+assert 10 == 9; // 不成立时触发断言，在游戏中显示消息并退出程序
+```
+
+### null赋值
+```RedScript
+null = a++; // 执行表达式带来的副作用并抛弃其返回值
+a++;  // 若直接写表达式，则编译器会自动加上null =
+```
+
+### struct结构体
+```RedScript
+struct Location {
+   int x = 0;
+   int y = 0;  // int类型必须有默认值
+   int z = 5;
+};
+
+Location player_location;  // 创建结构体实例(无参)
+$/say 玩家的坐标对象$(player_location); // 打印结构体实例的指针
+$/say 玩家的z坐标为$(player_location.z);  // 打印结构体实例的属性
+
+struct Player {
+   int time;
+   Location location;   // 结构体嵌套
+};
+
+Player player;
+player.time = 100;   // 结构体属性赋值
+player.location.x = 10;
+$/say 玩家$(player.time)秒内的位置是$(player.location.x)，$(player.location.y)，$(player.location.z);
+```
+
 ## 💡 完整示例
 
 ### 示例 1：生成平台
