@@ -843,32 +843,37 @@ public:
             error_msg("Invalid expression");
         }
         if (const auto term = parse_term()) {
-            try_consume_err(TokenType::eq);
-            if (const auto expr = parse_expr()) {
+            if (peek().has_value() && peek().value().type == TokenType::eq) {
+                consume();
+                if (const auto expr = parse_expr()) {
+                    if (has_smit) {
+                        try_consume_err(TokenType::semi);
+                    } else {
+                        try_consume(TokenType::semi);
+                    }
+                    auto stmt_let_attribute = m_allocator.alloc<NodeStmtAssignAttribute>();
+                    stmt_let_attribute->ident = term.value();
+                    stmt_let_attribute->expr = expr.value();
+                    auto stmt = m_allocator.alloc<NodeStmt>();
+                    stmt->var = stmt_let_attribute;
+                    return stmt;
+                }
+            } else {
                 if (has_smit) {
                     try_consume_err(TokenType::semi);
                 } else {
                     try_consume(TokenType::semi);
                 }
-                auto stmt_let_attribute = m_allocator.alloc<NodeStmtAssignAttribute>();
-                stmt_let_attribute->ident = term.value();
-                stmt_let_attribute->expr = expr.value();
+                auto stmt_null_assign = m_allocator.alloc<NodeStmtNullAssign>();
+                auto expr = m_allocator.alloc<NodeExpr>();
+                expr->var = term.value();
+                stmt_null_assign->expr = expr;
                 auto stmt = m_allocator.alloc<NodeStmt>();
-                stmt->var = stmt_let_attribute;
+                stmt->var = stmt_null_assign;
                 return stmt;
             }
         }
         if (const auto expr = parse_expr()) {
-            if (has_smit) {
-                try_consume_err(TokenType::semi);
-            } else {
-                try_consume(TokenType::semi);
-            }
-            auto stmt_null_assign = m_allocator.alloc<NodeStmtNullAssign>();
-            stmt_null_assign->expr = expr.value();
-            auto stmt = m_allocator.alloc<NodeStmt>();
-            stmt->var = stmt_null_assign;
-            return stmt;
         }
         return {};
     }
