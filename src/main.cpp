@@ -11,7 +11,7 @@
 
 namespace fs = std::filesystem;
 
-constexpr size_t HEAP_MAX_SIZE = 1024;
+constexpr size_t HEAP_MAX_SIZE = 1024 * 1;
 
 bool create_folder_in_current_dir(const std::string &folder_name, const bool overwrite = true) {
     try {

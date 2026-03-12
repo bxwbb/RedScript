@@ -151,6 +151,7 @@ struct NodeStmtMacrosCommand;
 struct NodeScope {
     std::vector<NodeStmt *> stmts;
     bool is_outline = false;
+    bool has_wait = false;
 };
 
 struct NodeIfPred;
@@ -246,6 +247,7 @@ struct NodeStmt {
         NodeStmtMacrosCommand *, NodeStmtWhile *, NodeStmtFor *, NodeStmtWait *, NodeStmtDefinition *, NodeStmtAssert *,
         NodeStmtNullAssign *, NodeStmtAssignAttribute *>
     var;
+    bool has_wait = false;
 };
 
 struct NodeProg {
@@ -494,6 +496,7 @@ public:
 
         while (auto stmt = parse_stmt()) {
             scope->stmts.push_back(stmt.value());
+            if (stmt.value()->has_wait) scope->has_wait = true;
         }
         try_consume_err(TokenType::close_curly);
         return scope;
@@ -661,6 +664,7 @@ public:
             if (auto scope = parse_scope()) {
                 auto stmt = m_allocator.alloc<NodeStmt>();
                 stmt->var = scope.value();
+                stmt->has_wait = true;
                 return stmt;
             }
             print_error("Invalid scope");
@@ -785,6 +789,7 @@ public:
             }
             auto stmt = m_allocator.alloc<NodeStmt>();
             stmt->var = stmt_wait;
+            stmt->has_wait = true;
             return stmt;
         }
         if (const auto struct_ = try_consume(TokenType::struct_)) {
@@ -874,6 +879,16 @@ public:
             }
         }
         if (const auto expr = parse_expr()) {
+            if (has_smit) {
+                try_consume_err(TokenType::semi);
+            } else {
+                try_consume(TokenType::semi);
+            }
+            auto stmt_null_assign = m_allocator.alloc<NodeStmtNullAssign>();
+            stmt_null_assign->expr = expr.value();
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_null_assign;
+            return stmt;
         }
         return {};
     }

@@ -73,8 +73,7 @@ public:
     explicit Generator(NodeProg prog, std::string file_name, std::string file_path)
         : m_prog(std::move(prog)), m_file_name(std::move(file_name)), m_file_path(std::move(file_path)) {
         std::fstream os(m_file_path + "main.mcfunction", std::ios::out);
-        m_output = std::move(os);
-        m_output_basic_fstream = &m_output;
+        m_output_stack.push_back(std::move(os));
         m_vars.push_back(m_int_type);
         m_vars.push_back(m_struct_type);
     }
@@ -681,27 +680,14 @@ public:
 
     void gen_scope(const NodeScope *scope, const std::optional<std::string> &conditions = {}) {
         if (scope->is_outline) {
-            m_output = create_new_function_file();
+            create_new_function_file();
             const std::string function_name = get_function_file_name();
             begin_scope();
             for (const NodeStmt *stmt: scope->stmts) {
                 gen_stmt(stmt, {}, {}, conditions);
             }
             end_scope();
-            if (scope->stmts.size() >= 10) {
-                std::fstream continue_file = create_new_function_file();
-                const std::string continue_function_name = get_function_file_name();
-                output("function " + m_file_name + ":" + continue_function_name + " 1t append\n", conditions);
-                m_output.close();
-                m_output = std::move(*m_output_basic_fstream);
-                output("schedule function " + m_file_name + ":" + function_name + " 1t append\n", conditions);
-                m_output = std::move(continue_file);
-                m_output_basic_fstream = &m_output;
-            } else {
-                m_output.close();
-                m_output = std::move(*m_output_basic_fstream);
-                output("function " + m_file_name + ":" + function_name + "\n", conditions);
-            }
+            close_function_file(true, 1);
         } else {
             begin_scope();
             for (const NodeStmt *stmt: scope->stmts) {
@@ -714,27 +700,47 @@ public:
     void gen_while(const NodeExpr *expr, const std::optional<NodeScope *> scope,
                    const std::optional<NodeStmt *> &stmt_conditions = {},
                    const std::optional<std::string> &conditions = {}) {
-        std::fstream old_fstream = std::move(m_output);
-        m_output = create_new_function_file();
-        const std::string function_name = get_function_file_name();
-        gen_expr(expr, conditions);
-        pop("rax", conditions);
-        output(
-            "execute if score rax __" + m_file_name + " matches 0 run return 0\n", conditions);
-        begin_scope();
-        if (scope.has_value()) {
-            for (const NodeStmt *stmt: scope.value()->stmts) {
-                gen_stmt(stmt, {}, {}, conditions);
+        if (!scope.value()->has_wait) {
+            create_new_function_file();
+            const std::string function_name = get_function_file_name();
+            gen_expr(expr, conditions);
+            pop("rax", conditions);
+            output(
+                "execute if score rax __" + m_file_name + " matches 0 run return 0\n", conditions);
+            begin_scope();
+            if (scope.has_value()) {
+                for (const NodeStmt *stmt: scope.value()->stmts) {
+                    gen_stmt(stmt, {}, {}, conditions);
+                }
             }
+            if (stmt_conditions.has_value()) {
+                gen_stmt(stmt_conditions.value(), {}, {}, conditions);
+            }
+            end_scope();
+            output("function " + m_file_name + ":" + function_name + "\n", conditions);
+            close_function_file();
+        } else {
+            create_new_function_file();
+            const std::string function_name = get_function_file_name();
+            gen_expr(expr, conditions);
+            pop("rax", conditions);
+            no_close_function_file_no_push();
+            output(
+                "execute if score rax __" + m_file_name + " matches 0 run return run function " + m_file_name + ":" +
+                get_function_file_name() + "\n", conditions);
+            begin_scope();
+            if (scope.has_value()) {
+                for (const NodeStmt *stmt: scope.value()->stmts) {
+                    gen_stmt(stmt, {}, {}, conditions);
+                }
+            }
+            if (stmt_conditions.has_value()) {
+                gen_stmt(stmt_conditions.value(), {}, {}, conditions);
+            }
+            end_scope();
+            output("function " + m_file_name + ":" + function_name + "\n", conditions);
+            only_close_function_file();
         }
-        if (stmt_conditions.has_value()) {
-            gen_stmt(stmt_conditions.value(), {}, {}, conditions);
-        }
-        end_scope();
-        output("function " + m_file_name + ":" + function_name + "\n", conditions);
-        m_output.close();
-        m_output = std::move(old_fstream);
-        output("function " + m_file_name + ":" + function_name + "\n", conditions);
     }
 
     void gen_if_pred(const NodeIfPred *pred, const std::vector<std::string> &labels,
@@ -988,7 +994,7 @@ public:
                 gen.gen_expr(stmt_exit->expr, conditions);
                 gen.pop("rax", conditions);
                 gen.output("return run scoreboard players get rax __" + gen.m_file_name + "\n", conditions);
-                gen.m_output << "# program is stop.\n";
+                gen.m_output_stack.back() << "# program is stop.\n";
             }
 
             void operator()(const NodeStmtDefinition *stmt_definition) const {
@@ -1040,12 +1046,12 @@ public:
             }
 
             void operator()(const NodeStmtMinecraftCommand *stmt_minecraft_command) const {
-                gen.output(stmt_minecraft_command->command.value.value() + "\n", conditions);
+                gen.output("return run execute as @a[tag=__" + gen.m_file_name + ",limit=1] at @s run " + stmt_minecraft_command->command.value.value() + "\n", conditions);
             }
 
             void operator()(const NodeStmtMacrosCommand *stmt_macros_command) const {
                 if (ff.has_value()) {
-                    gen.write_macros_function(ff.value(), lc.value(), stmt_macros_command, conditions);
+                    gen.write_macros_function(lc.value(), stmt_macros_command, conditions);
                     gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
                     for (int i = 0; i < lc; ++i) {
                         gen.output(
@@ -1053,18 +1059,20 @@ public:
                             " set from storage minecraft:__"
                             + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
                     }
+                    assert(false);
                 } else {
-                    std::fstream function_file = gen.create_new_function_file();
+                    gen.create_new_function_file_no_call();
+                    const std::string file_name = gen.get_function_file_name();
                     int label_count = 0;
-                    gen.write_macros_function(function_file, label_count, stmt_macros_command, conditions);
-                    function_file.close();
+                    gen.write_macros_function(label_count, stmt_macros_command, conditions);
+                    gen.only_close_function_file();
                     gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
                     for (int i = 0; i < label_count; ++i) {
                         gen.output("data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label(i) +
                                    " set from storage minecraft:__"
                                    + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
                     }
-                    gen.output("function " + gen.m_file_name + ":" + gen.get_function_file_name() +
+                    gen.output("function " + gen.m_file_name + ":" + file_name +
                                " with storage minecraft:__" +
                                gen.m_file_name + " r\n",
                                conditions);
@@ -1082,8 +1090,7 @@ public:
             }
 
             void operator()(const NodeStmtWait *stmt_wait) const {
-                std::fstream new_file = gen.create_new_function_file();
-                const std::string new_file_name = gen.m_file_name + ":" + gen.get_function_file_name();
+                const std::string new_file_name = gen.m_file_name + ":" + gen.get_function_file_name(1);
                 gen.gen_expr(stmt_wait->expr, conditions);
                 gen.output("data modify storage minecraft:__" + gen.m_file_name + " w set value {}\n", conditions);
                 gen.output(
@@ -1100,11 +1107,7 @@ public:
                 gen.output(
                     "execute if score rax __" + gen.m_file_name + " matches 0 run function " + new_file_name + "\n",
                     conditions);
-                gen.output("return 0\n", conditions);
-                gen.output("function " + new_file_name + "\n", {});
-                gen.m_output.close();
-                gen.m_output = std::move(new_file);
-                gen.m_output_basic_fstream = &gen.m_output;
+                gen.close_function_file_no_push();
             }
 
             void operator()(const NodeStmtAssert *stmt_assert) const {
@@ -1114,7 +1117,7 @@ public:
                     "execute if score rax __" + gen.m_file_name +
                     R"( matches 0 run tellraw @a {"color":"red","text":"Assertion triggered at line )"
                     + std::to_string(stmt_assert->line) + " in file " + stmt_assert->file_name + "\"}\n", conditions);
-                gen.output("execute if score rax __" + gen.m_file_name + " matches 0 run return 0\n", conditions);
+                gen.output("execute if score rax __" + gen.m_file_name + " matches 0 run return fail\n", conditions);
             }
 
             void operator()(const NodeStmtNullAssign *stmt_null_assign) const {
@@ -1154,20 +1157,31 @@ public:
     }
 
     void gen_prog() {
-        m_output << "# Generated by RedScript " << VERSION << "\n";
-        m_output << "data modify storage minecraft:__" << m_file_name << " __stack set value []\n";
-        m_output << "data modify storage minecraft:__" << m_file_name << " __heap set value []\n";
-        m_output << "data modify storage minecraft:__" << m_file_name << " __heap append value 0\n";
-        m_output << "scoreboard objectives add __" << m_file_name << " dummy\n";
-        m_output << "scoreboard players set __time __" << m_file_name << " 0\n";
-        m_output << "scoreboard objectives add _int_ dummy\n";
-        m_output << "function " + m_file_name + ":__util/reset_heap\n";
+        m_output_stack.back() << "# Generated by RedScript " << VERSION << "\n";
+        m_output_stack.back() << "data modify storage minecraft:__" << m_file_name << " __stack set value []\n";
+        m_output_stack.back() << "data modify storage minecraft:__" << m_file_name << " __heap set value []\n";
+        m_output_stack.back() << "data modify storage minecraft:__" << m_file_name << " __heap append value 0\n";
+        m_output_stack.back() << "scoreboard objectives add __" << m_file_name << " dummy\n";
+        m_output_stack.back() << "scoreboard players set __time __" << m_file_name << " 0\n";
+        m_output_stack.back() << "scoreboard objectives add _int_ dummy\n";
+        m_output_stack.back() << "function " + m_file_name + ":__util/reset_heap\n";
+        m_output_stack.back() << "execute as @e[tag=__" + m_file_name + "] run tag @s remove __" + m_file_name + "\n";
+        m_output_stack.back() << "tag @s add __" + m_file_name + "\n";
 
         for (const NodeStmt *stmt: m_prog.stmts) {
             gen_stmt(stmt);
         }
 
-        m_output.close();
+        for (auto &i: m_output_stack) {
+            i.close();
+        }
+        m_output_stack.clear();
+    }
+
+    ~Generator() {
+        for (auto &i: m_output_stack) {
+            i.close();
+        }
     }
 
 private:
@@ -1179,6 +1193,11 @@ private:
     Var m_struct_type{
         .name = "struct",
         .memory_block = MemoryManagement::MemoryBlock{.size = 1}
+    };
+
+    struct FuncFile {
+        std::string file_name;
+        std::fstream &file_stream;
     };
 
     void push(const std::string &reg, const std::optional<std::string> &conditions) {
@@ -1241,7 +1260,7 @@ private:
     }
 
     void move_int(const std::string &reg, const std::string &value, const std::optional<std::string> &conditions) {
-        m_output << "data modify storage minecraft:__" << m_file_name << " " << reg << " set value " <<
+        m_output_stack.back() << "data modify storage minecraft:__" << m_file_name << " " << reg << " set value " <<
                 value << "\n";
         output("scoreboard players set " + reg + " __" + m_file_name + " " + value + "\n", conditions);
     }
@@ -1252,24 +1271,27 @@ private:
     }
 
     void move_reg_add(const std::string &reg, const std::string &ret, const std::string &offset) {
-        m_output << "execute store result score r __" << m_file_name << " run data get storage minecraft:__" <<
+        m_output_stack.back() << "execute store result score r __" << m_file_name <<
+                " run data get storage minecraft:__" <<
                 m_file_name << " " << ret << " 1 \n";
         load_int(offset);
-        m_output << "scoreboard players operation r __" << m_file_name << " += " << offset << " _int_\n";
-        m_output << "execute store result storage minecraft:__" << m_file_name <<
+        m_output_stack.back() << "scoreboard players operation r __" << m_file_name << " += " << offset << " _int_\n";
+        m_output_stack.back() << "execute store result storage minecraft:__" << m_file_name <<
                 " r int 1 run scoreboard players get r __" << m_file_name << "\n";
         move_reg(reg, "r", {});
     }
 
     void load_int(const std::string &i) {
-        m_output << "scoreboard players set " << i << " _int_ " << i << "\n";
+        m_output_stack.back() << "scoreboard players set " << i << " _int_ " << i << "\n";
     }
 
     void get_value(const std::string &reg, const std::string &ret) {
-        m_output << "data modify storage minecraft:__" << m_file_name << " r set value {\"ret\":" << ret << "\"}\n";
-        m_output << "execute store result storage minecraft:__" << m_file_name <<
+        m_output_stack.back() << "data modify storage minecraft:__" << m_file_name << " r set value {\"ret\":" << ret <<
+                "\"}\n";
+        m_output_stack.back() << "execute store result storage minecraft:__" << m_file_name <<
                 " r.index int 1 run data get storage minecraft:__" << m_file_name << " " << reg << "\n";
-        m_output << "function " + m_file_name + ":__util/get_data with storage minecraft:__" << m_file_name << " r\n";
+        m_output_stack.back() << "function " + m_file_name + ":__util/get_data with storage minecraft:__" << m_file_name
+                << " r\n";
     }
 
     void score_move(const std::string &reg, const std::string &label,
@@ -1294,33 +1316,31 @@ private:
 
     void output(const std::string &comm, const std::optional<std::string> &conditions) {
         if (conditions.has_value()) {
-            m_output << "execute " << conditions.value() << "run " << comm;
+            m_output_stack.back() << "execute " << conditions.value() << "run " << comm;
         } else {
-            m_output << comm;
+            m_output_stack.back() << comm;
         }
         m_command_count++;
         if (m_command_count > 65400) {
-            std::fstream new_function_file = create_new_function_file();
-            const std::string function_name = get_function_file_name();
-            m_output << "schedule function " << m_file_name << ":" << function_name << " 1t append\n";
-            m_output.close();
-            m_output = std::move(new_function_file);
-            m_output_basic_fstream = &m_output;
+            only_close_function_file();
+            create_new_function_file(1);
             std::cerr << "Warring:The command exceeds the limit";
         }
     }
 
-    static void output(std::fstream &stream, const std::string &comm,
-                       const std::optional<std::string> &conditions) {
+    void output_dol(const std::string &comm,
+                    const std::optional<std::string> &conditions) {
+        std::stringstream command;
         if (conditions.has_value()) {
             if (comm.at(0) == '$') {
-                stream << "$execute " << conditions.value() << "run " << comm.substr(1);
+                command << "$execute " << conditions.value() << "run " << comm.substr(1);
             } else {
-                stream << "execute " << conditions.value() << "run " << comm;
+                command << "execute " << conditions.value() << "run " << comm;
             }
         } else {
-            stream << comm;
+            command << comm;
         }
+        output(command.str(), {});
     }
 
     void begin_scope() {
@@ -1343,47 +1363,127 @@ private:
         return label_tag.str();
     }
 
-    std::string get_label(const int index = 0) const {
+    [[nodiscard]] std::string get_label(const int index = 0) const {
         std::stringstream label_tag;
         label_tag << "main_" << m_label_count - 1 - index;
         return label_tag.str();
     }
 
-    std::fstream create_new_function_file() {
+    void create_new_function_file(const size_t time = 0) {
         std::stringstream function_file_name;
-        function_file_name << m_file_path << m_file_name << "_" << m_function_file_count << ".mcfunction";
-        std::fstream function_file(function_file_name.str(), std::ios::out);
+        function_file_name << m_file_name << "_" << m_function_file_count;
+        std::fstream function_file(m_file_path + function_file_name.str() + ".mcfunction", std::ios::out);
+        function_file << "# Generated by RedScript " << VERSION << "\n";
+        if (time == 0) {
+            m_output_stack.back() << "function " << m_file_name << ":" << function_file_name.str() << "\n";
+        } else {
+            m_output_stack.back() << "schedule function " << m_file_name << ":" << function_file_name.str()
+                    << " " << time << "t append \n";
+        }
+        m_output_stack.push_back(std::move(function_file));
+        m_function_file_count++;
+    }
+
+    void create_new_function_file_no_call(const size_t time = 0) {
+        std::stringstream function_file_name;
+        function_file_name << m_file_name << "_" << m_function_file_count;
+        std::fstream function_file(m_file_path + function_file_name.str() + ".mcfunction", std::ios::out);
+        function_file << "# Generated by RedScript " << VERSION << "\n";
+        m_output_stack.push_back(std::move(function_file));
+        m_function_file_count++;
+    }
+
+    FuncFile create_new_function_file_ret() {
+        std::stringstream function_file_name;
+        function_file_name << m_file_name << "_" << m_function_file_count;
+        std::fstream function_file(m_file_path + function_file_name.str() + ".mcfunction", std::ios::out);
+        function_file << "# Generated by RedScript " << VERSION << "\n";
+        // if (time == 0) {
+        //     m_output_stack.back() << "function " << m_file_name << ":" << function_file_name.str() << "\n";
+        // } else {
+        //     m_output_stack.back() << "schedule function " << m_file_name << ":" << function_file_name.str()
+        //             << " " << time << "t append \n";
+        // }
+        m_function_file_count++;
+        return {
+            .file_name = function_file_name.str(),
+            .file_stream = function_file
+        };
+    }
+
+    void close_function_file(const bool is_scheduled = false, const size_t time = 0) {
+        if (!is_scheduled) {
+            m_output_stack.back().close();
+            m_output_stack.pop_back();
+        } else {
+            std::stringstream function_file_name;
+            function_file_name << m_file_name << "_" << m_function_file_count;
+            std::fstream function_file(m_file_path + function_file_name.str() + ".mcfunction", std::ios::out);
+            function_file << "# Generated by RedScript " << VERSION << "\n";
+            if (time == 0) {
+                m_output_stack.back() << "function " << m_file_name << ":" << function_file_name.str() << "\n";
+            } else {
+                m_output_stack.back() << "schedule function " << m_file_name << ":" << function_file_name.str()
+                        << " " << time << "t append \n";
+            }
+            m_function_file_count++;
+            m_output_stack.back().close();
+            m_output_stack.pop_back();
+            m_output_stack.push_back(std::move(function_file));
+        }
+    }
+
+    void close_function_file_no_push() {
+        std::stringstream function_file_name;
+        function_file_name << m_file_name << "_" << m_function_file_count;
+        std::fstream function_file(m_file_path + function_file_name.str() + ".mcfunction", std::ios::out);
         function_file << "# Generated by RedScript " << VERSION << "\n";
         m_function_file_count++;
-        return function_file;
+        m_output_stack.back().close();
+        m_output_stack.pop_back();
+        m_output_stack.push_back(std::move(function_file));
+    }
+
+    void no_close_function_file_no_push() {
+        std::stringstream function_file_name;
+        function_file_name << m_file_name << "_" << m_function_file_count;
+        std::fstream function_file(m_file_path + function_file_name.str() + ".mcfunction", std::ios::out);
+        function_file << "# Generated by RedScript " << VERSION << "\n";
+        m_function_file_count++;
+        m_output_stack.insert(m_output_stack.end() - 1, std::move(function_file));
+    }
+
+    void only_close_function_file() {
+        m_output_stack.back().close();
+        m_output_stack.pop_back();
     }
 
     void back_function_file() {
         m_function_file_count--;
     }
 
-    std::string get_function_file_name() const {
-        std::stringstream function_file_name;
-        function_file_name << m_file_name << "_" << (m_function_file_count - 1);
-        return function_file_name.str();
+    [[nodiscard]] std::string get_function_file_name(const size_t offset = 0) const {
+        return m_file_name + "_" + std::to_string(m_function_file_count - 1 + offset);
     }
 
-    void write_macros_function(std::fstream &function_file, int &label_count,
+    void write_macros_function(int &label_count,
                                const NodeStmtMacrosCommand *stmt_macros_command,
                                const std::optional<std::string> &conditions = {}) {
-        output(function_file, "$", conditions);
+        output_dol("$return run execute as @a[tag=__" + m_file_name + ",limit=1] at @s run ", conditions);
         for (const Token &command: stmt_macros_command->commands) {
             if (command.type == TokenType::macros_var) {
+                std::swap(*(m_output_stack.rbegin()), *(m_output_stack.rbegin() + 1));
                 gen_expr(stmt_macros_command->vars.at(label_count));
                 std::string label = create_label();
                 label_count++;
                 pop_to_nbt(label, {});
-                output(function_file, "$(" + label, {});
+                std::swap(*(m_output_stack.rbegin()), *(m_output_stack.rbegin() + 1));
+                output_dol("$(" + label, {});
             } else {
-                output(function_file, command.value.value(), {});
+                output_dol(command.value.value(), {});
             }
         }
-        output(function_file, "\n", {});
+        output_dol("\n", {});
     }
 
     void released_label() {
@@ -1393,8 +1493,7 @@ private:
     const NodeProg m_prog;
     const std::string m_file_name;
     const std::string m_file_path;
-    std::fstream m_output;
-    std::fstream *m_output_basic_fstream;
+    std::vector<std::fstream> m_output_stack{};
     size_t m_stack_size = 0;
     MemoryManagement m_memory_management{m_file_name};
     std::vector<Var> m_vars{};
