@@ -5,7 +5,7 @@
 
 #include "parser.h"
 
-const inline auto VERSION = "v0.5.0";
+const inline auto VERSION = "v0.5.2";
 
 class MemoryManagement {
 public:
