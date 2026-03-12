@@ -250,7 +250,7 @@ for (let i = 0; i < height; i++) {
     $/setblock ~0 ~$(current_y) ~0 gold_block;
 }
 ```
-### 示例 4：斐波那契数列
+### 示例 3：斐波那契数列
 ```RedScript
 let a = 0; let b = 1;
 for (let i = 0; i < 10; i++) {
@@ -261,7 +261,7 @@ for (let i = 0; i < 10; i++) {
 }
 ```
 
-### 示例 5：移动检测器
+### 示例 4：移动检测器
 ```RedScript
 struct Location {
     int x = 0;
@@ -293,7 +293,7 @@ while (flag) {
 }
 ```
 
-### 示例 6：123木头人游戏(以上一个例子做框架)
+### 示例 5：123木头人游戏(以上一个例子做框架)
 ```RedScript
 struct Location {
     int x = 0;
@@ -345,7 +345,7 @@ while (flag) {
 }
 ```
 
-### 示例 7：求水仙花数
+### 示例 6：求水仙花数
 ```RedScript
 int hun;
 int ten;
@@ -435,7 +435,7 @@ RedScript 使用基于 NBT 存储的栈来管理变量和表达式求值：
 
 ## 📊 当前版本
 
-**v0.1.0**
+**v0.5.0**
 
 ### 已实现功能
 - ✅ 变量声明和赋值
@@ -443,12 +443,15 @@ RedScript 使用基于 NBT 存储的栈来管理变量和表达式求值：
 - ✅ 条件语句 (if/elif/else)
 - ✅ 循环语句 (for/while)
 - ✅ 自增自减运算符
-- ✅ Minecraft 命令宏
+- ✅ Minecraft 命令与宏
 - ✅ 作用域管理
 - ✅ outline 独立作用域
+- ✅ wait 等待
+- ✅ struct 结构体
+- ✅ assert 断言
 
 ### 计划功能
-- ⏳ 函数定义
+- ⏳ 函数定义 <- 正在进行
 - ⏳ 数组支持
 - ⏳ 字符串操作
 - ⏳ 更多内置命令
