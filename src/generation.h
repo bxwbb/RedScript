@@ -204,6 +204,12 @@ public:
                     gen.gen_term_attribute(*term_attribute_, ty->vars, conditions, true);
                 }
             }
+
+            void operator()(const NodeTermMinecraftCommand *term_minecraft_command) const {
+            }
+
+            void operator()(const NodeTermMacrosCommand *term_macros_command) const {
+            }
         };
         TermVisitor visitor({
             .gen = *this, .term_attribute = term_attribute, .conditions = conditions,
@@ -330,6 +336,12 @@ public:
                     gen.push_var_point(*term_attribute_, ty->vars, conditions, true);
                 }
             }
+
+            void operator()(const NodeTermMinecraftCommand *term_minecraft_command) const {
+            }
+
+            void operator()(const NodeTermMacrosCommand *term_macros_command) const {
+            }
         };
         TermVisitor visitor({
             .gen = *this, .term_attribute = term_attribute, .conditions = conditions,
@@ -431,6 +443,33 @@ public:
 
             void operator()(const NodeTermAttribute *term_attribute) const {
                 gen.gen_term_attribute(*term_attribute, gen.m_vars, conditions);
+            }
+
+            void operator()(const NodeTermMinecraftCommand *term_minecraft_command) const {
+                gen.output(
+                    "execute store result storage minecraft:__" + gen.m_file_name +
+                    " cr int 1 run execute as @a[tag=__" + gen.m_file_name + ",limit=1] at @s run " +
+                    term_minecraft_command->command.value.value() + "\n", conditions);
+                gen.push("cr", conditions);
+            }
+
+            void operator()(const NodeTermMacrosCommand *term_macros_command) const {
+                gen.create_new_function_file_no_call();
+                const std::string file_name = gen.get_function_file_name();
+                int label_count = 0;
+                gen.write_macros_function(label_count, term_macros_command, conditions);
+                gen.only_close_function_file();
+                gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
+                for (int i = 0; i < label_count; ++i) {
+                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label(i) +
+                               " set from storage minecraft:__"
+                               + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
+                }
+                gen.output("function " + gen.m_file_name + ":" + file_name +
+                           " with storage minecraft:__" +
+                           gen.m_file_name + " r\n",
+                           conditions);
+                for (int i = 0; i < label_count; ++i) gen.released_label();
             }
         };
         TermVisitor visitor({.gen = *this, .conditions = conditions});
@@ -1045,41 +1084,6 @@ public:
                 gen.released_label();
             }
 
-            void operator()(const NodeStmtMinecraftCommand *stmt_minecraft_command) const {
-                gen.output("return run execute as @a[tag=__" + gen.m_file_name + ",limit=1] at @s run " + stmt_minecraft_command->command.value.value() + "\n", conditions);
-            }
-
-            void operator()(const NodeStmtMacrosCommand *stmt_macros_command) const {
-                if (ff.has_value()) {
-                    gen.write_macros_function(lc.value(), stmt_macros_command, conditions);
-                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
-                    for (int i = 0; i < lc; ++i) {
-                        gen.output(
-                            "data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label(i) +
-                            " set from storage minecraft:__"
-                            + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
-                    }
-                    assert(false);
-                } else {
-                    gen.create_new_function_file_no_call();
-                    const std::string file_name = gen.get_function_file_name();
-                    int label_count = 0;
-                    gen.write_macros_function(label_count, stmt_macros_command, conditions);
-                    gen.only_close_function_file();
-                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " r set value {}\n", conditions);
-                    for (int i = 0; i < label_count; ++i) {
-                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " r." + gen.get_label(i) +
-                                   " set from storage minecraft:__"
-                                   + gen.m_file_name + " " + gen.get_label(i) + "\n", conditions);
-                    }
-                    gen.output("function " + gen.m_file_name + ":" + file_name +
-                               " with storage minecraft:__" +
-                               gen.m_file_name + " r\n",
-                               conditions);
-                    for (int i = 0; i < label_count; ++i) gen.released_label();
-                }
-            }
-
             void operator()(const NodeStmtWhile *stmt_while) const {
                 gen.gen_while(stmt_while->expr, stmt_while->scope, {}, conditions);
             }
@@ -1467,9 +1471,10 @@ private:
     }
 
     void write_macros_function(int &label_count,
-                               const NodeStmtMacrosCommand *stmt_macros_command,
+                               const NodeTermMacrosCommand *stmt_macros_command,
                                const std::optional<std::string> &conditions = {}) {
-        output_dol("$return run execute as @a[tag=__" + m_file_name + ",limit=1] at @s run ", conditions);
+        output_dol("$execute store result storage minecraft:__" + m_file_name +
+                   " cr int 1 run execute as @a[tag=__" + m_file_name + ",limit=1] at @s run ", conditions);
         for (const Token &command: stmt_macros_command->commands) {
             if (command.type == TokenType::macros_var) {
                 std::swap(*(m_output_stack.rbegin()), *(m_output_stack.rbegin() + 1));
@@ -1484,6 +1489,7 @@ private:
             }
         }
         output_dol("\n", {});
+        push("cr", conditions);
     }
 
     void released_label() {

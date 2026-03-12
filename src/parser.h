@@ -125,9 +125,18 @@ struct NodeTermMinusMinus {
     Token ident{};
 };
 
+struct NodeTermMinecraftCommand {
+    Token command;
+};
+
+struct NodeTermMacrosCommand {
+    std::vector<Token> commands;
+    std::vector<NodeExpr *> vars;
+};
+
 struct NodeTerm {
     std::variant<NodeTermIntLit *, NodeTermIdent *, NodeTermParen *, NodeTermPlusPlus *, NodeTermMinusMinus *,
-        NodeTermTime *, NodeTermNull *, NodeTermAttribute *> var;
+        NodeTermTime *, NodeTermNull *, NodeTermAttribute *, NodeTermMinecraftCommand *, NodeTermMacrosCommand *> var;
 };
 
 struct NodeExpr {
@@ -145,8 +154,6 @@ struct NodeStmtLet {
 };
 
 struct NodeStmt;
-
-struct NodeStmtMacrosCommand;
 
 struct NodeScope {
     std::vector<NodeStmt *> stmts;
@@ -184,15 +191,6 @@ struct NodeStmtAssign {
 struct NodeStmtAssignAttribute {
     NodeTerm *ident;
     NodeExpr *expr{};
-};
-
-struct NodeStmtMinecraftCommand {
-    Token command;
-};
-
-struct NodeStmtMacrosCommand {
-    std::vector<Token> commands;
-    std::vector<NodeExpr *> vars;
 };
 
 struct NodeStmtWhile {
@@ -243,8 +241,8 @@ struct NodeStmtNullAssign {
 };
 
 struct NodeStmt {
-    std::variant<NodeStmtExit *, NodeScope *, NodeStmtIf *, NodeStmtAssign *, NodeStmtMinecraftCommand *,
-        NodeStmtMacrosCommand *, NodeStmtWhile *, NodeStmtFor *, NodeStmtWait *, NodeStmtDefinition *, NodeStmtAssert *,
+    std::variant<NodeStmtExit *, NodeScope *, NodeStmtIf *, NodeStmtAssign *, NodeStmtWhile *, NodeStmtFor *,
+        NodeStmtWait *, NodeStmtDefinition *, NodeStmtAssert *,
         NodeStmtNullAssign *, NodeStmtAssignAttribute *>
     var;
     bool has_wait = false;
@@ -326,6 +324,32 @@ public:
             term_paren->expr = expr.value();
             auto term = m_allocator.alloc<NodeTerm>();
             term->var = term_paren;
+            return term;
+        }
+        if (const auto command = try_consume(TokenType::commands)) {
+            auto term_command = m_allocator.alloc<NodeTermMinecraftCommand>();
+            term_command->command = command.value();
+            auto term = m_allocator.alloc<NodeTerm>();
+            term->var = term_command;
+            return term;
+        }
+        if (const auto command = try_consume(TokenType::macros_start)) {
+            auto term_macros_commands = m_allocator.alloc<NodeTermMacrosCommand>();
+            while (peek().has_value() && peek().value().type != TokenType::semi) {
+                if (peek().value().type == TokenType::macros_var) {
+                    term_macros_commands->commands.push_back(consume());
+                    if (const auto expr = parse_expr()) {
+                        term_macros_commands->vars.push_back(expr.value());
+                        try_consume(TokenType::close_paren);
+                    } else {
+                        error_msg("Invalid expression");
+                    }
+                } else {
+                    term_macros_commands->commands.push_back(consume());
+                }
+            }
+            auto term = m_allocator.alloc<NodeTerm>();
+            term->var = term_macros_commands;
             return term;
         }
         if (try_consume(TokenType::null)) {
@@ -686,42 +710,6 @@ public:
             stmt_if->pred = parse_if_pred();
             auto stmt = m_allocator.alloc<NodeStmt>();
             stmt->var = stmt_if;
-            return stmt;
-        }
-        if (const auto command = try_consume(TokenType::commands)) {
-            auto stmt_command = m_allocator.alloc<NodeStmtMinecraftCommand>();
-            stmt_command->command = command.value();
-            if (has_smit) {
-                try_consume_err(TokenType::semi);
-            } else {
-                try_consume(TokenType::semi);
-            }
-            auto stmt = m_allocator.alloc<NodeStmt>();
-            stmt->var = stmt_command;
-            return stmt;
-        }
-        if (const auto command = try_consume(TokenType::macros_start)) {
-            auto stmt_macros_commands = m_allocator.alloc<NodeStmtMacrosCommand>();
-            while (peek().has_value() && peek().value().type != TokenType::semi) {
-                if (peek().value().type == TokenType::macros_var) {
-                    stmt_macros_commands->commands.push_back(consume());
-                    if (const auto expr = parse_expr()) {
-                        stmt_macros_commands->vars.push_back(expr.value());
-                        try_consume(TokenType::close_paren);
-                    } else {
-                        error_msg("Invalid expression");
-                    }
-                } else {
-                    stmt_macros_commands->commands.push_back(consume());
-                }
-            }
-            if (has_smit) {
-                try_consume_err(TokenType::semi);
-            } else {
-                try_consume(TokenType::semi);
-            }
-            auto stmt = m_allocator.alloc<NodeStmt>();
-            stmt->var = stmt_macros_commands;
             return stmt;
         }
         if (const auto while_ = try_consume(TokenType::while_)) {
