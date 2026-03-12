@@ -293,6 +293,83 @@ while (flag) {
 }
 ```
 
+### 示例 6：123木头人游戏(以上一个例子做框架)
+```RedScript
+struct Location {
+    int x = 0;
+    int y = 0;
+    int z = 0;
+};
+
+Location loc;
+Location old_loc;
+
+int flag = 1;
+
+loc.x = -/data get entity @s Pos[0] 1;
+loc.y = -/data get entity @s Pos[1] 1;
+loc.z = -/data get entity @s Pos[2] 1;
+
+int target_x = loc.x + 20;
+int count = 0;
+int move_type = 1;
+
+while (flag) {
+    old_loc.x = loc.x;
+    old_loc.y = loc.y;
+    old_loc.z = loc.z;
+    loc.x = -/data get entity @s Pos[0] 1;
+    loc.y = -/data get entity @s Pos[1] 1;
+    loc.z = -/data get entity @s Pos[2] 1;
+    if (((old_loc.x != loc.x) || (old_loc.y != loc.y) || (old_loc.z != loc.z)) && (move_type == 0)) {
+        -/say 你动了，游戏失败;
+        flag = 0;
+    }
+    if (loc.x >= target_x) {
+        -/say 你赢了;
+        flag = 0;
+    }
+    if (count >= 10) {
+        move_type = !move_type;
+        count = 0;
+    }
+    if (count == 0) {
+        if (move_type) {
+            -/say 你现在可以移动;
+        } else {
+            -/say 你现在不可以移动;
+        }
+    }
+    count++;
+    wait 5;
+}
+```
+
+### 示例 7：求水仙花数
+```RedScript
+int hun;
+int ten;
+int ind;
+int n;
+-/say result is:;
+
+int time = -/scoreboard players get __time __test;
+
+for (n = 100; n < 1000; n++) {
+    hun = n / 100;
+    ten = (n - hun * 100) / 10;
+    ind = n % 10;
+    if (n == (hun * hun * hun + ten * ten * ten + ind * ind * ind)) {
+        $/say $(n);
+    }
+    wait 1; // 防止一刻执行过多指令
+}
+
+int time2 = -/scoreboard players get __time __test;
+$/say 总共耗时 $(time2 - time) 刻;
+```
+
+
 ## 🔧 技术细节
 
 ### 编译器架构
