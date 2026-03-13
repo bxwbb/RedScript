@@ -10,6 +10,7 @@ struct NodeStmtStruct;
 struct NodeStmtCustomType;
 struct NodeStmtDeclarationVariable;
 struct NodeTerm;
+struct NodeTermVariable;
 
 struct NodeTermIntLit {
     Token int_lit;
@@ -31,7 +32,7 @@ struct NodeTermParen {
 
 struct NodeTermAttribute {
     Token ident;
-    NodeTerm *var;
+    NodeTermVariable *var;
 };
 
 struct NodeBinExprAdd {
@@ -118,11 +119,11 @@ struct NodeBinExpr {
 };
 
 struct NodeTermPlusPlus {
-    Token ident{};
+    NodeTermVariable *ident{};
 };
 
 struct NodeTermMinusMinus {
-    Token ident{};
+    NodeTermVariable *ident{};
 };
 
 struct NodeTermMinecraftCommand {
@@ -134,9 +135,14 @@ struct NodeTermMacrosCommand {
     std::vector<NodeExpr *> vars;
 };
 
+struct NodeTermVariable {
+    std::variant<NodeTermIdent *, NodeTermAttribute *> var;
+};
+
 struct NodeTerm {
-    std::variant<NodeTermIntLit *, NodeTermIdent *, NodeTermParen *, NodeTermPlusPlus *, NodeTermMinusMinus *,
-        NodeTermTime *, NodeTermNull *, NodeTermAttribute *, NodeTermMinecraftCommand *, NodeTermMacrosCommand *> var;
+    std::variant<NodeTermIntLit *, NodeTermParen *, NodeTermPlusPlus *, NodeTermMinusMinus *,
+        NodeTermTime *, NodeTermNull *, NodeTermMinecraftCommand *, NodeTermMacrosCommand *,
+        NodeTermVariable *> var;
 };
 
 struct NodeExpr {
@@ -189,7 +195,7 @@ struct NodeStmtAssign {
 };
 
 struct NodeStmtAssignAttribute {
-    NodeTerm *ident;
+    NodeTermVariable *ident;
     NodeExpr *expr{};
 };
 
@@ -272,6 +278,25 @@ public:
         exit(EXIT_FAILURE);
     }
 
+    std::optional<NodeTermVariable *> parse_term_variable(const Token &ident) {
+        if (peek().has_value() && peek().value().type == TokenType::dot) {
+            consume();
+            if (const auto right_term = parse_term_variable(try_consume_err(TokenType::ident).value())) {
+                const auto term_attribute = m_allocator.alloc<NodeTermAttribute>();
+                term_attribute->ident = ident;
+                term_attribute->var = right_term.value();
+                auto term = m_allocator.alloc<NodeTermVariable>();
+                term->var = term_attribute;
+                return term;
+            }
+        }
+        auto trem_ident = m_allocator.alloc<NodeTermIdent>();
+        trem_ident->ident = ident;
+        auto term = m_allocator.alloc<NodeTermVariable>();
+        term->var = trem_ident;
+        return term;
+    }
+
     std::optional<NodeTerm *> parse_term() {
         if (const auto int_lit = try_consume(TokenType::int_)) {
             auto term_int_lit = m_allocator.alloc<NodeTermIntLit>();
@@ -280,11 +305,12 @@ public:
             term->var = term_int_lit;
             return term;
         }
-        if (const auto ident = try_consume(TokenType::ident)) {
+        if (const auto ident_token = try_consume(TokenType::ident)) {
+            NodeTermVariable *ident = parse_term_variable(ident_token.value()).value();
             if (peek().has_value() && peek().value().type == TokenType::plus_plus) {
                 consume();
                 auto trem_plus_plus = m_allocator.alloc<NodeTermPlusPlus>();
-                trem_plus_plus->ident = ident.value();
+                trem_plus_plus->ident = ident;
                 auto term = m_allocator.alloc<NodeTerm>();
                 term->var = trem_plus_plus;
                 return term;
@@ -292,26 +318,13 @@ public:
             if (peek().has_value() && peek().value().type == TokenType::minus_minus) {
                 consume();
                 auto term_minus_minus = m_allocator.alloc<NodeTermMinusMinus>();
-                term_minus_minus->ident = ident.value();
+                term_minus_minus->ident = ident;
                 auto term = m_allocator.alloc<NodeTerm>();
                 term->var = term_minus_minus;
                 return term;
             }
-            if (peek().has_value() && peek().value().type == TokenType::dot) {
-                consume();
-                if (const auto right_term = parse_term()) {
-                    const auto term_attribute = m_allocator.alloc<NodeTermAttribute>();
-                    term_attribute->ident = ident.value();
-                    term_attribute->var = right_term.value();
-                    auto term = m_allocator.alloc<NodeTerm>();
-                    term->var = term_attribute;
-                    return term;
-                }
-            }
-            auto trem_ident = m_allocator.alloc<NodeTermIdent>();
-            trem_ident->ident = ident.value();
             auto term = m_allocator.alloc<NodeTerm>();
-            term->var = trem_ident;
+            term->var = ident;
             return term;
         }
         if (const auto open_paren = try_consume(TokenType::open_paren)) {
@@ -835,35 +848,24 @@ public:
             }
             error_msg("Invalid expression");
         }
-        if (const auto term = parse_term()) {
-            if (peek().has_value() && peek().value().type == TokenType::eq) {
-                consume();
-                if (const auto expr = parse_expr()) {
-                    if (has_smit) {
-                        try_consume_err(TokenType::semi);
-                    } else {
-                        try_consume(TokenType::semi);
+        if (peek().has_value() && peek().value().type == TokenType::ident && peek_after(TokenType::eq, TokenType::semi)) {
+            if (const auto ident = try_consume(TokenType::ident)) {
+                if (const auto term_variable = parse_term_variable(ident.value())) {
+                    consume();
+                    if (const auto expr = parse_expr()) {
+                        if (has_smit) {
+                            try_consume_err(TokenType::semi);
+                        } else {
+                            try_consume(TokenType::semi);
+                        }
+                        auto stmt_let_attribute = m_allocator.alloc<NodeStmtAssignAttribute>();
+                        stmt_let_attribute->ident = term_variable.value();
+                        stmt_let_attribute->expr = expr.value();
+                        auto stmt = m_allocator.alloc<NodeStmt>();
+                        stmt->var = stmt_let_attribute;
+                        return stmt;
                     }
-                    auto stmt_let_attribute = m_allocator.alloc<NodeStmtAssignAttribute>();
-                    stmt_let_attribute->ident = term.value();
-                    stmt_let_attribute->expr = expr.value();
-                    auto stmt = m_allocator.alloc<NodeStmt>();
-                    stmt->var = stmt_let_attribute;
-                    return stmt;
                 }
-            } else {
-                if (has_smit) {
-                    try_consume_err(TokenType::semi);
-                } else {
-                    try_consume(TokenType::semi);
-                }
-                auto stmt_null_assign = m_allocator.alloc<NodeStmtNullAssign>();
-                auto expr = m_allocator.alloc<NodeExpr>();
-                expr->var = term.value();
-                stmt_null_assign->expr = expr;
-                auto stmt = m_allocator.alloc<NodeStmt>();
-                stmt->var = stmt_null_assign;
-                return stmt;
             }
         }
         if (const auto expr = parse_expr()) {
@@ -901,9 +903,10 @@ private:
         return m_tokens.at(m_index + offset);
     }
 
-    [[nodiscard]] bool peek_after(const TokenType type) const {
+    [[nodiscard]] bool peek_after(const TokenType type, const std::optional<TokenType> stop = {}) const {
         int count = 1;
         while (peek(count).has_value() && peek(count).value().type != type) {
+            if (stop.has_value() && peek(count).value().type == stop.value()) return false;
             count++;
         }
         return peek(count).has_value();

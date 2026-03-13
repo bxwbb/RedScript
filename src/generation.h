@@ -379,57 +379,85 @@ public:
             }
 
             void operator()(const NodeTermPlusPlus *term_plus_plus) const {
-                const auto ident = term_plus_plus->ident;
-                const auto it = std::find_if(
+
+                struct TermVariableVisitor {
+                    Generator &gen;
+                    const std::optional<std::string> &conditions = {};
+
+                    void operator()(const NodeTermIdent *term_ident) const {
+                        const auto it = std::find_if(
                     gen.m_vars.cbegin(),
                     gen.m_vars.cend(),
                     [&](const Var &var) {
-                        return var.name == ident.value.value();
+                        return var.name == term_ident->ident.value.value();
                     });
-                if (it == gen.m_vars.cend()) {
-                    print_error("Undeclared identifier: " + ident.value.value());
-                }
-                std::stringstream offset;
-                offset << "__stack[-" << (gen.m_stack_size - it->stack_loc) << "]";
-                gen.output(
-                    "execute store result score pp __" + gen.m_file_name + " run data get storage minecraft:__" + gen.
-                    m_file_name + " " +
-                    offset.str() +
-                    "\n", conditions);
-                gen.output("scoreboard players add pp __" + gen.m_file_name + " 1\n", conditions);
-                gen.to_nbt("pp", conditions);
-                gen.output(
-                    "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
-                    " set from storage minecraft:__" + gen.m_file_name + " pp\n",
-                    conditions);
-                gen.push("pp", conditions);
+                        if (it == gen.m_vars.cend()) {
+                            print_error("Undeclared identifier: " + term_ident->ident.value.value());
+                        }
+                        std::stringstream offset;
+                        offset << "__stack[-" << (gen.m_stack_size - it->stack_loc) << "]";
+                        gen.output(
+                            "execute store result score pp __" + gen.m_file_name + " run data get storage minecraft:__" + gen.
+                            m_file_name + " " +
+                            offset.str() +
+                            "\n", conditions);
+                        gen.output("scoreboard players add pp __" + gen.m_file_name + " 1\n", conditions);
+                        gen.to_nbt("pp", conditions);
+                        gen.output(
+                            "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
+                            " set from storage minecraft:__" + gen.m_file_name + " pp\n",
+                            conditions);
+                        gen.push("pp", conditions);
+                    }
+
+                    void operator()(const NodeTermAttribute *term_attribute) const {
+                        assert(false);
+                    }
+                };
+
+                TermVariableVisitor visitor{.gen = gen, .conditions = conditions};
+                std::visit(visitor, term_plus_plus->ident->var);
             }
 
             void operator()(const NodeTermMinusMinus *term_minus_minus) const {
-                const auto ident = term_minus_minus->ident;
-                const auto it = std::find_if(
-                    gen.m_vars.cbegin(),
-                    gen.m_vars.cend(),
-                    [&](const Var &var) {
-                        return var.name == ident.value.value();
-                    });
-                if (it == gen.m_vars.cend()) {
-                    print_error("Undeclared identifier: " + ident.value.value());
-                }
-                std::stringstream offset;
-                offset << "__stack[-" << (gen.m_stack_size - it->stack_loc) << "]";
-                gen.output(
-                    "execute store result score pp __" + gen.m_file_name + " run data get storage minecraft:__" + gen.
-                    m_file_name + " " +
-                    offset.str() +
-                    "\n", conditions);
-                gen.output("scoreboard players add pp __" + gen.m_file_name + " -1\n", conditions);
-                gen.to_nbt("pp", conditions);
-                gen.output(
-                    "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
-                    " set from storage minecraft:__" + gen.m_file_name + " pp\n",
-                    conditions);
-                gen.push("pp", conditions);
+                struct TermVariableVisitor {
+                    Generator &gen;
+                    const std::optional<std::string> &conditions = {};
+
+                    void operator()(const NodeTermIdent *term_ident) const {
+                        const auto it = std::find_if(
+                            gen.m_vars.cbegin(),
+                            gen.m_vars.cend(),
+                            [&](const Var &var) {
+                                return var.name == term_ident->ident.value.value();
+                            });
+                        if (it == gen.m_vars.cend()) {
+                            print_error("Undeclared identifier: " + term_ident->ident.value.value());
+                        }
+                        std::stringstream offset;
+                        offset << "__stack[-" << (gen.m_stack_size - it->stack_loc) << "]";
+                        gen.output(
+                            "execute store result score pp __" + gen.m_file_name + " run data get storage minecraft:__"
+                            + gen.
+                            m_file_name + " " +
+                            offset.str() +
+                            "\n", conditions);
+                        gen.output("scoreboard players add pp __" + gen.m_file_name + " -1\n", conditions);
+                        gen.to_nbt("pp", conditions);
+                        gen.output(
+                            "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
+                            " set from storage minecraft:__" + gen.m_file_name + " pp\n",
+                            conditions);
+                        gen.push("pp", conditions);
+                    }
+
+                    void operator()(const NodeTermAttribute *term_attribute) const {
+                        assert(false);
+                    }
+                };
+
+                TermVariableVisitor visitor{.gen = gen, .conditions = conditions};
+                std::visit(visitor, term_minus_minus->ident->var);
             }
 
             void operator()(const NodeTermTime *term_time) const {
@@ -470,6 +498,35 @@ public:
                            gen.m_file_name + " r\n",
                            conditions);
                 for (int i = 0; i < label_count; ++i) gen.released_label();
+            }
+
+            void operator()(NodeTermVariable *term_variable) const {
+                struct TermVariableVisitor {
+                    Generator &gen;
+                    const std::optional<std::string> &conditions;
+
+                    void operator()(const NodeTermIdent *term_ident) const {
+                        const auto it = std::find_if(
+                            gen.m_vars.cbegin(),
+                            gen.m_vars.cend(),
+                            [&](const Var &var) {
+                                return var.name == term_ident->ident.value.value();
+                            });
+                        if (it == gen.m_vars.cend()) {
+                            print_error("Undeclared identifier: " + term_ident->ident.value.value());
+                        }
+                        std::stringstream offset;
+                        offset << "__stack[-" << (gen.m_stack_size - it->stack_loc) << "]";
+                        gen.push(offset.str(), conditions);
+                    }
+
+                    void operator()(const NodeTermAttribute *term_attribute) const {
+                        gen.gen_term_attribute(*term_attribute, gen.m_vars, conditions);
+                    }
+                };
+
+                TermVariableVisitor visitor{.gen = gen, .conditions = conditions};
+                std::visit(visitor, term_variable->var);
             }
         };
         TermVisitor visitor({.gen = *this, .conditions = conditions});
@@ -1130,8 +1187,10 @@ public:
             }
 
             void operator()(const NodeStmtAssignAttribute *stmt_assign_attribute) const {
-                gen.push_var_point(*std::get<NodeTermAttribute *>(stmt_assign_attribute->ident->var), gen.m_vars,
-                                   conditions);
+                gen.push_var_point(
+                    *std::get<NodeTermAttribute *>(stmt_assign_attribute->ident->var),
+                    gen.m_vars,
+                    conditions);
                 gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
                            conditions);
                 gen.pop_to_nbt("hg.index", conditions);
