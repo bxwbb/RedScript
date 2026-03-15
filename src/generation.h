@@ -5,7 +5,7 @@
 
 #include "parser.h"
 
-const inline auto VERSION = "v0.5.4";
+const inline auto VERSION = "v0.5.5";
 
 class MemoryManagement {
 public:
@@ -89,9 +89,6 @@ public:
             const bool point_offset;
             const std::vector<Var> &att_vars;
 
-            void operator()(const NodeTermIntLit *term_int_lit) const {
-            }
-
             void operator()(const NodeTermIdent *term_ident) const {
                 const auto obj = std::find_if(
                     att_vars.cbegin(),
@@ -102,7 +99,13 @@ public:
                 if (obj == att_vars.cend()) {
                     print_error("Undeclared identifier: " + term_ident->ident.value.value());
                 }
-                size_t point = point_offset + (point_offset ? -1 : obj->memory_block.point);
+                if (point_offset) {
+                    gen.push_int("0", conditions);
+                } else {
+                    std::stringstream offset;
+                    offset << "__stack[-" << (gen.m_stack_size - obj->stack_loc) << "]";
+                    gen.push(offset.str(), conditions);
+                }
                 const auto ty = std::find_if(
                     gen.m_vars.cbegin(),
                     gen.m_vars.cend(),
@@ -116,21 +119,25 @@ public:
                     if (v.name == term_ident->ident.value.value()) {
                         goto has_var;
                     }
-                    point++;
+                    gen.push_int("1", conditions);
+                    gen.stack_add(conditions);
                 }
                 print_error("Undeclared identifier: " + term_ident->ident.value.value());
             has_var:
                 if (point_offset == 0) {
-                    std::stringstream offset;
-                    offset << "__heap[" << point << "]";
-                    gen.push(offset.str(), conditions);
+                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                               conditions);
+                    gen.pop_to_nbt("hg.index", conditions);
+                    gen.output(
+                        "execute store result storage minecraft:__" + gen.m_file_name + " rax int 1 run function " +
+                        gen.m_file_name + ":__util/get_heap_value with storage minecraft:__" + gen.m_file_name +
+                        " hg\n",
+                        conditions);
+                    gen.push("rax", conditions);
                 } else {
-                    if (point != 0) {
-                        gen.push_int(std::to_string(point), conditions);
-                        gen.stack_add(conditions);
-                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
-                                   conditions);
-                    }
+                    gen.stack_add(conditions);
+                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                               conditions);
                     gen.pop_to_nbt("hg.index", conditions);
                     gen.output(
                         "execute store result storage minecraft:__" + gen.m_file_name + " rax int 1 run function " + gen
@@ -138,21 +145,6 @@ public:
                         conditions);
                     gen.push("rax", conditions);
                 }
-            }
-
-            void operator()(const NodeTermParen *term_paren) const {
-            }
-
-            void operator()(const NodeTermPlusPlus *term_plus_plus) const {
-            }
-
-            void operator()(const NodeTermMinusMinus *term_minus_minus) const {
-            }
-
-            void operator()(const NodeTermTime *term_time) const {
-            }
-
-            void operator()(const NodeTermNull *term_null) const {
             }
 
             void operator()(const NodeTermAttribute *term_attribute_) const {
@@ -203,12 +195,6 @@ public:
                     gen.push("rax", conditions);
                     gen.gen_term_attribute(*term_attribute_, ty->vars, conditions, true);
                 }
-            }
-
-            void operator()(const NodeTermMinecraftCommand *term_minecraft_command) const {
-            }
-
-            void operator()(const NodeTermMacrosCommand *term_macros_command) const {
             }
         };
         TermVisitor visitor({
@@ -239,7 +225,13 @@ public:
                 if (obj == att_vars.cend()) {
                     print_error("Undeclared identifier: " + term_ident->ident.value.value());
                 }
-                size_t point = point_offset + (point_offset ? -1 : obj->memory_block.point);
+                if (point_offset) {
+                    gen.push_int("0", conditions);
+                } else {
+                    std::stringstream offset;
+                    offset << "__stack[-" << (gen.m_stack_size - obj->stack_loc) << "]";
+                    gen.push(offset.str(), conditions);
+                }
                 const auto ty = std::find_if(
                     gen.m_vars.cbegin(),
                     gen.m_vars.cend(),
@@ -253,19 +245,15 @@ public:
                     if (v.name == term_ident->ident.value.value()) {
                         goto has_var;
                     }
-                    point++;
+                    gen.push_int("1", conditions);
+                    gen.stack_add(conditions);
                 }
                 print_error("Undeclared identifier: " + term_ident->ident.value.value());
             has_var:
-                if (point_offset == 0) {
-                    gen.push_int(std::to_string(point), conditions);
-                } else {
-                    if (point != 0) {
-                        gen.push_int(std::to_string(point), conditions);
-                        gen.stack_add(conditions);
-                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
-                                   conditions);
-                    }
+                if (point_offset) {
+                    gen.stack_add(conditions);
+                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                               conditions);
                 }
             }
 
@@ -279,7 +267,9 @@ public:
                 if (obj == att_vars.cend()) {
                     print_error("Undeclared identifier: " + term_attribute_->ident.value.value());
                 }
-                size_t point = point_offset + obj->memory_block.point;
+                std::stringstream offset;
+                offset << "__stack[-" << (gen.m_stack_size - obj->stack_loc) << "]";
+                gen.push(offset.str(), conditions);
                 const auto ty = std::find_if(
                     gen.m_vars.cbegin(),
                     gen.m_vars.cend(),
@@ -293,22 +283,26 @@ public:
                     if (v.name == term_attribute_->ident.value.value()) {
                         goto has_var;
                     }
-                    point++;
+                    gen.push_int("1", conditions);
+                    gen.stack_add(conditions);
                 }
                 print_error("Undeclared identifier: " + term_attribute_->ident.value.value());
             has_var:
                 if (point_offset == 0) {
-                    std::stringstream offset;
-                    offset << "__heap[" << point << "]";
-                    gen.push(offset.str(), conditions);
+                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                               conditions);
+                    gen.pop_to_nbt("hg.index", conditions);
+                    gen.output(
+                        "execute store result storage minecraft:__" + gen.m_file_name + " rax int 1 run function " +
+                        gen.m_file_name + ":__util/get_heap_value with storage minecraft:__" + gen.m_file_name +
+                        " hg\n",
+                        conditions);
+                    gen.push("rax", conditions);
                     gen.push_var_point(*term_attribute_, ty->vars, conditions, true);
                 } else {
-                    if (point != 0) {
-                        gen.push_int(std::to_string(point), conditions);
-                        gen.stack_add(conditions);
-                        gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
-                                   conditions);
-                    }
+                    gen.stack_add(conditions);
+                    gen.output("data modify storage minecraft:__" + gen.m_file_name + " hg set value {}\n",
+                               conditions);
                     gen.pop_to_nbt("hg.index", conditions);
                     gen.output(
                         "execute store result storage minecraft:__" + gen.m_file_name + " rax int 1 run function " + gen
@@ -419,7 +413,8 @@ public:
                             offset.str() +
                             "\n", conditions);
                         gen.load_int("1");
-                        gen.output("scoreboard players operation pp __" + gen.m_file_name + " -= 1 _int_\n", conditions);
+                        gen.output("scoreboard players operation pp __" + gen.m_file_name + " -= 1 _int_\n",
+                                   conditions);
                         gen.to_nbt("pp", conditions);
                         gen.output(
                             "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +

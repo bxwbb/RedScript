@@ -232,7 +232,8 @@ struct NodeStmtStruct {
 
 struct NodeStmtCustomType {
     Token ident_type;
-    Token ident_var;
+    Token ident;
+    NodeExpr *expr{};
 };
 
 struct NodeStmtDeclarationVariable {
@@ -657,6 +658,21 @@ public:
             auto stmt = m_allocator.alloc<NodeStmtDefinition>();
             stmt->var = stmt_let;
             return stmt;
+        }
+        if (peek().has_value() && peek().value().type == TokenType::ident &&
+            peek(1).has_value() && peek(1).value().type == TokenType::ident &&
+            peek(2).has_value() && peek(2).value().type == TokenType::eq) {
+            auto stmt_let = m_allocator.alloc<NodeStmtCustomType>();
+            stmt_let->ident_type = consume();
+            stmt_let->ident = consume();
+            consume();
+            if (const auto expr = parse_expr()) {
+                stmt_let->expr = expr.value();
+                auto stmt = m_allocator.alloc<NodeStmtDefinition>();
+                stmt->var = stmt_let;
+                return stmt;
+            }
+            error_expected("expression");
         }
         return {};
     }
