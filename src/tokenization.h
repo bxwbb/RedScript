@@ -47,6 +47,8 @@ enum class TokenType {
     separation,
     assert,
     null,
+    void_,
+    return_,
 };
 
 inline std::string to_string(const TokenType type) {
@@ -137,6 +139,10 @@ inline std::string to_string(const TokenType type) {
             return "assert";
         case TokenType::null:
             return "null";
+        case TokenType::void_:
+            return "void";
+        case TokenType::return_:
+            return "return";
         default:
             return "";
     }
@@ -252,6 +258,12 @@ private:
             } else if (buf == "null") {
                 tokens.push_back({.type = TokenType::null, .line = line_count});
                 buf.clear();
+            } else if (buf == "void") {
+                tokens.push_back({.type = TokenType::void_, .line = line_count});
+                buf.clear();
+            } else if (buf == "return") {
+                tokens.push_back({.type = TokenType::return_, .line = line_count});
+                buf.clear();
             } else {
                 tokens.push_back({.type = TokenType::ident, .line = line_count, .value = buf});
                 buf.clear();
@@ -276,6 +288,9 @@ private:
                 if (peek().value() == '*' && peek(1).has_value() && peek(1).value() == '/') {
                     break;
                 }
+                consume();
+            }
+            if (peek().has_value()) {
                 consume();
             }
             if (peek().has_value()) {
@@ -328,10 +343,12 @@ private:
                     com.push_back(consume());
                     com.push_back(consume());
                     tokens.push_back({.type = TokenType::macros_var, .line = line_count});
-                    while (peek().has_value() && peek().value() != ')') {
+                    int count = 1;
+                    while (count > 0) {
+                        if (peek().has_value() && peek().value() == '(') count++;
+                        if (peek().has_value() && peek().value() == ')') count--;
                         check(tokens, buf, line_count);
                     }
-                    tokens.push_back({.type = TokenType::close_paren, .line = line_count});
                     com.clear();
                 } else {
                     com.push_back(consume());

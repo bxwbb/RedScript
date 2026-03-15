@@ -8,6 +8,7 @@
       <w>mcfunction</w>
       <w>oumum</w>
       <w>prec</w>
+      <w>setblock</w>
       <w>tellraw</w>
     </words>
   </dictionary>

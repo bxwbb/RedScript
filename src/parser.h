@@ -139,10 +139,14 @@ struct NodeTermVariable {
     std::variant<NodeTermIdent *, NodeTermAttribute *> var;
 };
 
+struct NodeTermFunctionCall {
+    NodeTermVariable *func;
+};
+
 struct NodeTerm {
     std::variant<NodeTermIntLit *, NodeTermParen *, NodeTermPlusPlus *, NodeTermMinusMinus *,
         NodeTermTime *, NodeTermNull *, NodeTermMinecraftCommand *, NodeTermMacrosCommand *,
-        NodeTermVariable *> var;
+        NodeTermVariable *, NodeTermFunctionCall *> var;
 };
 
 struct NodeExpr {
@@ -246,10 +250,20 @@ struct NodeStmtNullAssign {
     NodeExpr *expr{};
 };
 
+struct NodeStmtFunction {
+    Token ident;
+    Token type;
+    NodeScope *scope{};
+};
+
+struct NodeStmtReturn {
+    std::optional<NodeExpr *> expr;
+};
+
 struct NodeStmt {
     std::variant<NodeStmtExit *, NodeScope *, NodeStmtIf *, NodeStmtAssign *, NodeStmtWhile *, NodeStmtFor *,
         NodeStmtWait *, NodeStmtDefinition *, NodeStmtAssert *,
-        NodeStmtNullAssign *, NodeStmtAssignAttribute *>
+        NodeStmtNullAssign *, NodeStmtAssignAttribute *, NodeStmtFunction *, NodeStmtReturn *>
     var;
     bool has_wait = false;
 };
@@ -321,6 +335,16 @@ public:
                 term_minus_minus->ident = ident;
                 auto term = m_allocator.alloc<NodeTerm>();
                 term->var = term_minus_minus;
+                return term;
+            }
+            if (peek().has_value() && peek().value().type == TokenType::open_paren) {
+                consume();
+                // TODO: 读取参数
+                try_consume_err(TokenType::close_paren);
+                auto term_function_call = m_allocator.alloc<NodeTermFunctionCall>();
+                term_function_call->func = ident;
+                auto term = m_allocator.alloc<NodeTerm>();
+                term->var = term_function_call;
                 return term;
             }
             auto term = m_allocator.alloc<NodeTerm>();
@@ -644,6 +668,39 @@ public:
         return {};
     }
 
+    std::optional<NodeStmtFunction *> parse_stmt_function() {
+        if (peek().has_value() && peek().value().type == TokenType::void_) {
+            if (peek(1).has_value() && peek(1).value().type == TokenType::ident) {
+                auto stmt_function = m_allocator.alloc<NodeStmtFunction>();
+                stmt_function->type = consume();
+                stmt_function->ident = consume();
+                try_consume_err(TokenType::open_paren);
+                // TODO: 增加函数的参数
+                try_consume_err(TokenType::close_paren);
+                if (const auto scope = parse_scope()) {
+                    stmt_function->scope = scope.value();
+                    return stmt_function;
+                }
+                error_expected("scope");
+            }
+        }
+        if (peek().has_value() && peek().value().type == TokenType::ident && peek(1).has_value() && peek(1).value().type
+            == TokenType::ident && peek(2).has_value() && peek(2).value().type == TokenType::open_paren) {
+            auto stmt_function = m_allocator.alloc<NodeStmtFunction>();
+            stmt_function->type = consume();
+            stmt_function->ident = consume();
+            try_consume_err(TokenType::open_paren);
+            // TODO: 增加函数的参数
+            try_consume_err(TokenType::close_paren);
+            if (const auto scope = parse_scope()) {
+                stmt_function->scope = scope.value();
+                return stmt_function;
+            }
+            error_expected("scope");
+        }
+            return {};
+    }
+
     std::optional<NodeStmt *> parse_stmt(bool has_smit = true) {
         if (peek().has_value() && peek().value().type == TokenType::exit && peek(1).has_value() && peek(1).value().type
             ==
@@ -848,7 +905,8 @@ public:
             }
             error_msg("Invalid expression");
         }
-        if (peek().has_value() && peek().value().type == TokenType::ident && peek_after(TokenType::eq, TokenType::semi)) {
+        if (peek().has_value() && peek().value().type == TokenType::ident &&
+            peek_after(TokenType::eq, TokenType::semi)) {
             if (const auto ident = try_consume(TokenType::ident)) {
                 if (const auto term_variable = parse_term_variable(ident.value())) {
                     consume();
@@ -867,6 +925,23 @@ public:
                     }
                 }
             }
+        }
+        if (const auto stmt_function = parse_stmt_function()) {
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt->var = stmt_function.value();
+            return stmt;
+        }
+        if (try_consume(TokenType::return_)) {
+            auto stmt_return = m_allocator.alloc<NodeStmtReturn>();
+            auto stmt = m_allocator.alloc<NodeStmt>();
+            stmt_return->expr = parse_expr();
+            stmt->var = stmt_return;
+            if (has_smit) {
+                try_consume_err(TokenType::semi);
+            } else {
+                try_consume(TokenType::semi);
+            }
+            return stmt;
         }
         if (const auto expr = parse_expr()) {
             if (has_smit) {

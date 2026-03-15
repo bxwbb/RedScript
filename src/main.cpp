@@ -56,6 +56,7 @@ void create_basic_environment(const std::string &project_name) {
     create_folder_in_current_dir(project_name + "/data/" + project_name);
     create_folder_in_current_dir(project_name + "/data/" + project_name + "/function");
     create_folder_in_current_dir(project_name + "/data/" + project_name + "/function/__util");
+    create_folder_in_current_dir(project_name + "/data/" + project_name + "/function/__func");
     create_folder_in_current_dir(project_name + "/data/" + project_name + "/tags");
     create_folder_in_current_dir(project_name + "/data/" + project_name + "/tags/function");
     create_folder_in_current_dir(project_name + "/data/" + "minecraft");

@@ -5,7 +5,7 @@
 
 #include "parser.h"
 
-const inline auto VERSION = "v0.5.2";
+const inline auto VERSION = "v0.5.4";
 
 class MemoryManagement {
 public:
@@ -229,9 +229,6 @@ public:
             const bool point_offset;
             const std::vector<Var> &att_vars;
 
-            void operator()(const NodeTermIntLit *term_int_lit) const {
-            }
-
             void operator()(const NodeTermIdent *term_ident) const {
                 const auto obj = std::find_if(
                     att_vars.cbegin(),
@@ -270,21 +267,6 @@ public:
                                    conditions);
                     }
                 }
-            }
-
-            void operator()(const NodeTermParen *term_paren) const {
-            }
-
-            void operator()(const NodeTermPlusPlus *term_plus_plus) const {
-            }
-
-            void operator()(const NodeTermMinusMinus *term_minus_minus) const {
-            }
-
-            void operator()(const NodeTermTime *term_time) const {
-            }
-
-            void operator()(const NodeTermNull *term_null) const {
             }
 
             void operator()(const NodeTermAttribute *term_attribute_) const {
@@ -336,12 +318,6 @@ public:
                     gen.push_var_point(*term_attribute_, ty->vars, conditions, true);
                 }
             }
-
-            void operator()(const NodeTermMinecraftCommand *term_minecraft_command) const {
-            }
-
-            void operator()(const NodeTermMacrosCommand *term_macros_command) const {
-            }
         };
         TermVisitor visitor({
             .gen = *this, .term_attribute = term_attribute, .conditions = conditions,
@@ -379,25 +355,25 @@ public:
             }
 
             void operator()(const NodeTermPlusPlus *term_plus_plus) const {
-
                 struct TermVariableVisitor {
                     Generator &gen;
                     const std::optional<std::string> &conditions = {};
 
                     void operator()(const NodeTermIdent *term_ident) const {
                         const auto it = std::find_if(
-                    gen.m_vars.cbegin(),
-                    gen.m_vars.cend(),
-                    [&](const Var &var) {
-                        return var.name == term_ident->ident.value.value();
-                    });
+                            gen.m_vars.cbegin(),
+                            gen.m_vars.cend(),
+                            [&](const Var &var) {
+                                return var.name == term_ident->ident.value.value();
+                            });
                         if (it == gen.m_vars.cend()) {
                             print_error("Undeclared identifier: " + term_ident->ident.value.value());
                         }
                         std::stringstream offset;
                         offset << "__stack[-" << (gen.m_stack_size - it->stack_loc) << "]";
                         gen.output(
-                            "execute store result score pp __" + gen.m_file_name + " run data get storage minecraft:__" + gen.
+                            "execute store result score pp __" + gen.m_file_name + " run data get storage minecraft:__"
+                            + gen.
                             m_file_name + " " +
                             offset.str() +
                             "\n", conditions);
@@ -442,7 +418,8 @@ public:
                             m_file_name + " " +
                             offset.str() +
                             "\n", conditions);
-                        gen.output("scoreboard players add pp __" + gen.m_file_name + " -1\n", conditions);
+                        gen.load_int("1");
+                        gen.output("scoreboard players operation pp __" + gen.m_file_name + " -= 1 _int_\n", conditions);
                         gen.to_nbt("pp", conditions);
                         gen.output(
                             "data modify storage minecraft:__" + gen.m_file_name + " " + offset.str() +
@@ -527,6 +504,38 @@ public:
 
                 TermVariableVisitor visitor{.gen = gen, .conditions = conditions};
                 std::visit(visitor, term_variable->var);
+            }
+
+            void operator()(const NodeTermFunctionCall *term_function_call) const {
+                struct TermVariableVisitor {
+                    Generator &gen;
+                    const std::optional<std::string> &conditions = {};
+
+                    void operator()(const NodeTermIdent *term_ident) const {
+                        const auto it = std::find_if(
+                            gen.m_vars.cbegin(),
+                            gen.m_vars.cend(),
+                            [&](const Var &var) {
+                                return var.name == term_ident->ident.value.value();
+                            });
+                        if (it == gen.m_vars.cend()) {
+                            print_error("Undeclared identifier: " + term_ident->ident.value.value());
+                        }
+                        gen.output(
+                            "execute store result storage minecraft:__" + gen.m_file_name +
+                            " rax int 1 run function " + gen.m_file_name + ":__func/" + term_ident->ident.value.value()
+                            + "\n",
+                            conditions);
+                        gen.push("rax", conditions);
+                    }
+
+                    void operator()(const NodeTermAttribute *term_attribute) const {
+                        assert(false);
+                    }
+                };
+
+                TermVariableVisitor visitor{.gen = gen, .conditions = conditions};
+                std::visit(visitor, term_function_call->func->var);
             }
         };
         TermVisitor visitor({.gen = *this, .conditions = conditions});
@@ -752,7 +761,7 @@ public:
         std::visit(visitor, sin_expr->var);
     }
 
-    void gen_expr(const NodeExpr *expr, const std::optional<std::string> &conditions = {}) {
+    void gen_expr(const NodeExpr *expr, const std::optional<std::string> &conditions) {
         struct ExprVisitor {
             Generator &gen;
             const std::optional<std::string> &conditions = {};
@@ -1200,6 +1209,39 @@ public:
                     "function " + gen.m_file_name + ":__util/set_heap_value with storage minecraft:__" + gen.m_file_name
                     + " hg\n", conditions);
             }
+
+            void operator()(const NodeStmtFunction *stmt_function) const {
+                std::stringstream function_file_name;
+                function_file_name << gen.m_file_path << "__func/" << stmt_function->ident.value.value() <<
+                        ".mcfunction";
+                std::fstream function_file(function_file_name.str(), std::ios::out);
+                function_file << "# Generated by RedScript " << VERSION << "\n";
+                function_file << "# Function " << stmt_function->ident.value.value() << "\n";
+                gen.m_output_stack.push_back(std::move(function_file));
+                gen.gen_scope(stmt_function->scope, conditions);
+                gen.m_output_stack.back() << "return 0";
+                gen.only_close_function_file();
+                gen.m_vars.push_back({
+                    .name = stmt_function->ident.value.value(),
+                    .type = gen.m_function_type.name,
+                    .stack_loc = gen.m_stack_size,
+                    .memory_block = gen.m_memory_management.new_memory(gen.m_function_type.memory_block.size),
+                    .vars = {},
+                    .expr = {},
+                    .def = {}
+                });
+            }
+
+            void operator()(const NodeStmtReturn *stmt_return) const {
+                gen.only_end_scope();
+                if (stmt_return->expr.has_value()) {
+                    gen.gen_expr(stmt_return->expr.value(), conditions);
+                    gen.pop_to_nbt("rax", conditions);
+                    gen.output("return run data get storage minecraft:__" + gen.m_file_name + " rax 1\n", conditions);
+                } else {
+                    gen.output("return 0\n", conditions);
+                }
+            }
         };
 
         StmtVisitor visitor{.gen = *this, .ff = ff, .lc = lc, .conditions = conditions};
@@ -1255,6 +1297,11 @@ private:
 
     Var m_struct_type{
         .name = "struct",
+        .memory_block = MemoryManagement::MemoryBlock{.size = 1}
+    };
+
+    Var m_function_type{
+        .name = "function",
         .memory_block = MemoryManagement::MemoryBlock{.size = 1}
     };
 
@@ -1419,6 +1466,13 @@ private:
         m_scopes.pop_back();
     }
 
+    void only_end_scope() {
+        const size_t pop_count = m_vars.size() - m_scopes.back();
+        for (int i = 0; i < pop_count; i++) {
+            only_pop({});
+        }
+    }
+
     std::string create_label() {
         std::stringstream label_tag;
         label_tag << "main_" << m_label_count;
@@ -1537,12 +1591,12 @@ private:
         for (const Token &command: stmt_macros_command->commands) {
             if (command.type == TokenType::macros_var) {
                 std::swap(*(m_output_stack.rbegin()), *(m_output_stack.rbegin() + 1));
-                gen_expr(stmt_macros_command->vars.at(label_count));
+                gen_expr(stmt_macros_command->vars.at(label_count), {});
                 std::string label = create_label();
                 label_count++;
                 pop_to_nbt(label, {});
                 std::swap(*(m_output_stack.rbegin()), *(m_output_stack.rbegin() + 1));
-                output_dol("$(" + label, {});
+                output_dol("$(" + label + ")", {});
             } else {
                 output_dol(command.value.value(), {});
             }
